@@ -1,0 +1,6 @@
+{
+  "name": "ForgeML Pipeline Studio",
+  "description": "Dynamic multi-model fine-tuning pipeline, automated hyperparameter optimization, HuggingFace dataset orchestration, auto-benchmarking, and multi-provider agentic AI control plane for Qwen3.5, LFM2.5, Gemma4, and beyond.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}

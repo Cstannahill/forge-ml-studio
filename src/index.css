@@ -1,0 +1,168 @@
+@import "tailwindcss";
+
+@layer base {
+  :root {
+    --gb-bg: #2F2F2F;
+    --gb-sidebar: #22211F;
+    --gb-card: #363431;
+    --gb-card-hover: #3F3C38;
+    --gb-recessed: #272624;
+    --gb-border: #4A453E;
+    --gb-border-subtle: #3F3B35;
+    --gb-fg: #FFE9B1;
+    --gb-fg-secondary: #D5C4A1;
+    --gb-fg-muted: #A89984;
+    --gb-accent: #458588;
+    --gb-accent-hover: #529497;
+    --gb-accent-light: #83A598;
+    --gb-green: #8EC07C;
+    --gb-green-bg: #689D6A;
+    --gb-amber: #FABD2F;
+    --gb-red: #FB4934;
+
+    font-family: 'JetBrains Mono', 'JetBrainsMono Nerd Font', ui-monospace, SFMono-Regular, monospace;
+    background-color: var(--gb-bg);
+    color: var(--gb-fg);
+    font-feature-settings: "liga" 1, "calt" 1;
+  }
+
+  body {
+    background-color: var(--gb-bg);
+    color: var(--gb-fg);
+    font-family: 'JetBrains Mono', 'JetBrainsMono Nerd Font', ui-monospace, SFMono-Regular, monospace;
+  }
+
+  code, pre, .font-mono, input, select, textarea, button {
+    font-family: 'JetBrains Mono', 'JetBrainsMono Nerd Font', ui-monospace, SFMono-Regular, monospace;
+    font-variant-numeric: tabular-nums;
+  }
+}
+
+.tabular-nums {
+  font-variant-numeric: tabular-nums;
+}
+
+/* Gruvbox Theme Surface & Token Mapping (Matching User's #2F2F2F / #FFE9B1 / #458588 Setup) */
+.bg-\[\#0B0F17\] {
+  background-color: var(--gb-recessed) !important;
+}
+
+.bg-\[\#0B0F17\]\/95 {
+  background-color: color-mix(in srgb, var(--gb-bg) 95%, transparent) !important;
+}
+
+.bg-\[\#111827\] {
+  background-color: var(--gb-card) !important;
+  border-radius: 0.75rem;
+}
+
+.bg-\[\#111827\]\/70 {
+  background-color: color-mix(in srgb, var(--gb-card) 78%, transparent) !important;
+  border-radius: 0.75rem;
+}
+
+.border-slate-800,
+.border-slate-800\/90,
+.border-slate-800\/80,
+.border-slate-800\/70,
+.border-slate-700,
+.border-slate-700\/80 {
+  border-color: var(--gb-border) !important;
+}
+
+.divide-slate-800\/80 > :not([hidden]) ~ :not([hidden]),
+.divide-slate-800\/70 > :not([hidden]) ~ :not([hidden]) {
+  border-color: var(--gb-border-subtle) !important;
+}
+
+.text-slate-100 {
+  color: var(--gb-fg) !important;
+}
+
+.text-slate-200,
+.text-slate-300 {
+  color: var(--gb-fg-secondary) !important;
+}
+
+.text-slate-400,
+.text-slate-500 {
+  color: var(--gb-fg-muted) !important;
+}
+
+.bg-blue-600 {
+  background-color: var(--gb-accent) !important;
+}
+
+.bg-blue-500 {
+  background-color: var(--gb-accent-light) !important;
+}
+
+.bg-indigo-500 {
+  background-color: var(--gb-green-bg) !important;
+}
+
+.hover\:bg-blue-500:hover {
+  background-color: var(--gb-accent-hover) !important;
+}
+
+.text-blue-400,
+.text-blue-300 {
+  color: var(--gb-accent-light) !important;
+}
+
+.border-blue-500,
+.border-blue-500\/80,
+.border-blue-500\/40 {
+  border-color: var(--gb-accent-light) !important;
+}
+
+.bg-blue-600\/15,
+.bg-blue-600\/20 {
+  background-color: color-mix(in srgb, var(--gb-accent) 24%, transparent) !important;
+}
+
+.bg-emerald-600 {
+  background-color: #5A825C !important;
+}
+
+.hover\:bg-emerald-500:hover {
+  background-color: #689D6A !important;
+}
+
+.text-emerald-400,
+.text-emerald-300 {
+  color: var(--gb-green) !important;
+}
+
+.bg-emerald-500 {
+  background-color: var(--gb-green) !important;
+}
+
+.text-amber-400,
+.text-amber-200 {
+  color: var(--gb-amber) !important;
+}
+
+.bg-slate-800 {
+  background-color: #3E3B37 !important;
+}
+
+.hover\:bg-slate-700:hover {
+  background-color: #4A4641 !important;
+}
+
+/* Custom subtle Gruvbox scrollbar */
+::-webkit-scrollbar {
+  width: 6px;
+  height: 6px;
+}
+::-webkit-scrollbar-track {
+  background: var(--gb-sidebar);
+}
+::-webkit-scrollbar-thumb {
+  background: var(--gb-border);
+  border-radius: 3px;
+}
+::-webkit-scrollbar-thumb:hover {
+  background: var(--gb-fg-muted);
+}
