@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useEffect, useState } from 'react';
 import {
   AlertTriangle,
   ShieldAlert,
@@ -12,15 +12,19 @@ import {
   LoggingFramework,
   NormalizedDatasetSample,
   PlainLanguageComparison,
+  SELECTED_MODEL_STORAGE_KEY,
   SafetensorsExportPlan,
   StandardizedModelCardResult,
+  TRAINING_SERIES_STORAGE_KEY,
   TargetFormat,
   buildPlainLanguageBenchmarkAnalysis,
   cleanAndRedactSample,
   computeNextHyperparameters,
+  deserializeTrainingSeriesMap,
   evaluateGpuThresholds,
   formatSampleToTarget,
   normalizeDatasetRecord,
+  serializeTrainingSeriesMap,
   validateDatasetRecords,
 } from './lib/pipelineLogic';
 import {
@@ -50,10 +54,58 @@ type ActiveTabId = 'command' | 'datasets' | 'benchmarks' | 'agents' | 'cloud';
 export default function App() {
   const [activeTab, setActiveTab] = useState<ActiveTabId>('command');
   const [models, setModels] = useState<RegisteredModel[]>(INITIAL_MODELS);
-  const [selectedModelId, setSelectedModelId] = useState<string>(INITIAL_MODELS[0].id);
-  const [trainingSeries, setTrainingSeries] = useState<TrainingMetricPoint[]>(
-    INITIAL_TRAINING_SERIES
-  );
+  const [selectedModelId, setSelectedModelId] = useState<string>(() => {
+    try {
+      const savedModelId = window.localStorage.getItem(SELECTED_MODEL_STORAGE_KEY);
+      if (savedModelId && INITIAL_MODELS.some((m) => m.id === savedModelId)) {
+        return savedModelId;
+      }
+    } catch {
+      // Ignore storage access errors
+    }
+    return INITIAL_MODELS[0].id;
+  });
+
+  const [trainingSeriesByModel, setTrainingSeriesByModel] = useState<
+    Record<string, TrainingMetricPoint[]>
+  >(() => {
+    const modelIds = INITIAL_MODELS.map((m) => m.id);
+    try {
+      const rawMap = window.localStorage.getItem(TRAINING_SERIES_STORAGE_KEY);
+      if (rawMap) {
+        return deserializeTrainingSeriesMap(rawMap, INITIAL_TRAINING_SERIES, modelIds);
+      }
+      const rawDirect = window.localStorage.getItem('trainingSeries');
+      if (rawDirect) {
+        const parsedDirect = JSON.parse(rawDirect);
+        if (Array.isArray(parsedDirect) && parsedDirect.length > 0) {
+          const baseMap = deserializeTrainingSeriesMap(null, INITIAL_TRAINING_SERIES, modelIds);
+          baseMap[INITIAL_MODELS[0].id] = parsedDirect;
+          return baseMap;
+        }
+      }
+    } catch {
+      // Fall back to default series if localStorage is unavailable
+    }
+    return deserializeTrainingSeriesMap(null, INITIAL_TRAINING_SERIES, modelIds);
+  });
+
+  const trainingSeries: TrainingMetricPoint[] =
+    trainingSeriesByModel[selectedModelId] ?? INITIAL_TRAINING_SERIES;
+
+  useEffect(() => {
+    try {
+      window.localStorage.setItem(SELECTED_MODEL_STORAGE_KEY, selectedModelId);
+      window.localStorage.setItem(
+        TRAINING_SERIES_STORAGE_KEY,
+        serializeTrainingSeriesMap(trainingSeriesByModel)
+      );
+      window.localStorage.setItem('trainingSeries', JSON.stringify(trainingSeries));
+    } catch {
+      // Ignore storage quota or private-mode errors
+    }
+  }, [selectedModelId, trainingSeriesByModel, trainingSeries]);
+
   const [isTrainingActive, setIsTrainingActive] = useState<boolean>(false);
 
   const [activeHpoConfig, setActiveHpoConfig] = useState<HyperparameterConfig>({
@@ -379,12 +431,13 @@ export default function App() {
     );
   };
 
-  // Handler: Run Training Step (+50 steps)
+  // Handler: Run Training Step (+50 steps) and persist to localStorage
   const handleRunTrainingStep = () => {
     setIsTrainingActive(true);
     setTimeout(() => {
-      setTrainingSeries((prev) => {
-        const last = prev[prev.length - 1];
+      setTrainingSeriesByModel((prevMap) => {
+        const currentSeries = prevMap[selectedModelId] ?? INITIAL_TRAINING_SERIES;
+        const last = currentSeries[currentSeries.length - 1];
         const nextStep = last.step + 50;
         const nextEpoch = Number((last.epoch + 0.25).toFixed(2));
         const nextTrainLoss = Number(Math.max(0.42, last.trainLoss * 0.92).toFixed(3));
@@ -402,10 +455,24 @@ export default function App() {
         appendLog(
           'METRIC',
           'TRAINER',
-          `Step ${nextStep} (Epoch ${nextEpoch}) completed: train_loss=${nextTrainLoss}, val_loss=${nextValLoss}, grad_norm=${nextGradNorm}.`,
-          `model=${selectedModelId} | lr=${activeHpoConfig.learningRate}`
+          `Step ${nextStep} (Epoch ${nextEpoch}) completed & persisted to localStorage: train_loss=${nextTrainLoss}, val_loss=${nextValLoss}, grad_norm=${nextGradNorm}.`,
+          `model=${selectedModelId} | lr=${activeHpoConfig.learningRate} | persisted=true`
         );
-        return [...prev, nextPoint];
+        const updatedSeries = [...currentSeries, nextPoint];
+        const nextMap = {
+          ...prevMap,
+          [selectedModelId]: updatedSeries,
+        };
+        try {
+          window.localStorage.setItem(
+            TRAINING_SERIES_STORAGE_KEY,
+            serializeTrainingSeriesMap(nextMap)
+          );
+          window.localStorage.setItem('trainingSeries', JSON.stringify(updatedSeries));
+        } catch {
+          // Ignore storage errors
+        }
+        return nextMap;
       });
 
       setGpuStats((prev) => {
@@ -423,6 +490,33 @@ export default function App() {
       });
       setIsTrainingActive(false);
     }, 150);
+  };
+
+  // Handler: Reset persisted trainingSeries for the active model
+  const handleResetTrainingSeries = () => {
+    const resetCopy = INITIAL_TRAINING_SERIES.map((pt) => ({ ...pt }));
+    setTrainingSeriesByModel((prevMap) => {
+      const nextMap = {
+        ...prevMap,
+        [selectedModelId]: resetCopy,
+      };
+      try {
+        window.localStorage.setItem(
+          TRAINING_SERIES_STORAGE_KEY,
+          serializeTrainingSeriesMap(nextMap)
+        );
+        window.localStorage.setItem('trainingSeries', JSON.stringify(resetCopy));
+      } catch {
+        // Ignore storage errors
+      }
+      return nextMap;
+    });
+    appendLog(
+      'INFO',
+      'TRAINER',
+      `Reset persisted trainingSeries in localStorage for ${selectedModelId} back to baseline Step 350.`,
+      `model=${selectedModelId} | step=350`
+    );
   };
 
   // Handler: Run Automated HPO + Auto-Benchmark Trial
@@ -824,6 +918,7 @@ export default function App() {
             trainingSeries={trainingSeries}
             isTrainingActive={isTrainingActive}
             onRunTrainingStep={handleRunTrainingStep}
+            onResetTrainingSeries={handleResetTrainingSeries}
             onRunHpoSweep={handleRunHpoSweep}
             activeHpoConfig={activeHpoConfig}
             onUpdateHpoConfig={setActiveHpoConfig}

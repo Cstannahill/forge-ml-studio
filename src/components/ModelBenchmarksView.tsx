@@ -22,6 +22,7 @@ import {
 import {
   ArchitectureFamily,
   PlainLanguageComparison,
+  buildBenchmarkSummaryTableRows,
   buildPlainLanguageBenchmarkAnalysis,
   buildRadarChartComparisonData,
   compareBaseAndFineTuned,
@@ -74,6 +75,10 @@ export const ModelBenchmarksView: React.FC<ModelBenchmarksViewProps> = ({
     selectedModel.baseBenchmarks,
     selectedModel.fineTunedBenchmarks
   );
+
+  const summaryTableRows = buildBenchmarkSummaryTableRows(models);
+  const selectedSummaryRow =
+    summaryTableRows.find((r) => r.modelId === selectedModel.id) ?? summaryTableRows[0];
 
   const storedExplanationEntry = plainExplanations[selectedModel.id];
   const activeExplanation: PlainLanguageComparison | null =
@@ -324,12 +329,287 @@ export const ModelBenchmarksView: React.FC<ModelBenchmarksViewProps> = ({
         })}
       </section>
 
+      {/* Section 02: Base vs. Fine-Tuned Performance Summary Table (Highlighting MMLU-Pro & HumanEval Deltas) */}
+      <section
+        aria-label="Base vs Fine-Tuned Performance Summary"
+        className="bg-[#111827] border border-slate-800/90 rounded-lg p-5 space-y-5"
+      >
+        <div className="flex flex-col lg:flex-row lg:items-center justify-between gap-4 pb-4 border-b border-slate-800/80">
+          <div>
+            <h2 className="text-base font-semibold text-slate-100">
+              02. Base vs. Fine-Tuned Performance Summary Table (MMLU-Pro &amp; HumanEval+ Delta Spotlight)
+            </h2>
+            <p className="text-xs text-slate-400 mt-0.5">
+              Side-by-side baseline vs. fine-tuned scores across the model registry, specifically highlighting net accuracy deltas on MMLU-Pro and HumanEval+
+            </p>
+          </div>
+
+          <div className="flex items-center gap-2 text-xs font-mono tabular-nums">
+            <span className="text-slate-400">Active Focus:</span>
+            <span className="px-2.5 py-1 rounded bg-[#0B0F17] border border-slate-800 text-slate-100 font-semibold">
+              {selectedModel.name}
+            </span>
+          </div>
+        </div>
+
+        {/* Highlighted Delta Spotlight Cards for Active Model (MMLU-Pro & HumanEval+ Emphasized) */}
+        <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
+          <div className="bg-[#0B0F17] border border-emerald-500/40 rounded-lg p-3.5">
+            <div className="flex items-center justify-between text-xs text-slate-300">
+              <span className="font-semibold inline-flex items-center">
+                MMLU-Pro Delta
+                <InfoTooltip termKey="mmluPro" align="left" />
+              </span>
+              <span className="text-[10px] font-mono uppercase px-1.5 py-0.5 rounded bg-emerald-500/15 text-emerald-400">
+                Highlighted
+              </span>
+            </div>
+            <div className="mt-2 flex items-baseline justify-between font-mono tabular-nums">
+              <span className="text-xs text-slate-400">
+                Base {selectedSummaryRow.mmluProBase}% → FT{' '}
+                <strong className="text-slate-100">
+                  {selectedSummaryRow.mmluProFineTuned !== null
+                    ? `${selectedSummaryRow.mmluProFineTuned}%`
+                    : 'Pending'}
+                </strong>
+              </span>
+              <span className="text-lg font-semibold text-emerald-400">
+                {selectedSummaryRow.mmluProDelta !== null
+                  ? `${selectedSummaryRow.mmluProDelta >= 0 ? '+' : ''}${selectedSummaryRow.mmluProDelta}%`
+                  : '—'}
+              </span>
+            </div>
+          </div>
+
+          <div className="bg-[#0B0F17] border border-emerald-500/40 rounded-lg p-3.5">
+            <div className="flex items-center justify-between text-xs text-slate-300">
+              <span className="font-semibold inline-flex items-center">
+                HumanEval+ Delta
+                <InfoTooltip termKey="humanEval" align="left" />
+              </span>
+              <span className="text-[10px] font-mono uppercase px-1.5 py-0.5 rounded bg-emerald-500/15 text-emerald-400">
+                Highlighted
+              </span>
+            </div>
+            <div className="mt-2 flex items-baseline justify-between font-mono tabular-nums">
+              <span className="text-xs text-slate-400">
+                Base {selectedSummaryRow.humanEvalBase}% → FT{' '}
+                <strong className="text-slate-100">
+                  {selectedSummaryRow.humanEvalFineTuned !== null
+                    ? `${selectedSummaryRow.humanEvalFineTuned}%`
+                    : 'Pending'}
+                </strong>
+              </span>
+              <span className="text-lg font-semibold text-emerald-400">
+                {selectedSummaryRow.humanEvalDelta !== null
+                  ? `${selectedSummaryRow.humanEvalDelta >= 0 ? '+' : ''}${selectedSummaryRow.humanEvalDelta}%`
+                  : '—'}
+              </span>
+            </div>
+          </div>
+
+          <div className="bg-[#0B0F17] border border-slate-800 rounded-lg p-3.5">
+            <div className="flex items-center justify-between text-xs text-slate-300">
+              <span className="font-medium inline-flex items-center">
+                GSM8K Math Delta
+                <InfoTooltip termKey="gsm8k" />
+              </span>
+              <span className="text-[10px] font-mono text-slate-400">CoT Logic</span>
+            </div>
+            <div className="mt-2 flex items-baseline justify-between font-mono tabular-nums">
+              <span className="text-xs text-slate-400">
+                Base {selectedSummaryRow.gsm8kBase}% → FT{' '}
+                <strong className="text-slate-100">
+                  {selectedSummaryRow.gsm8kFineTuned !== null
+                    ? `${selectedSummaryRow.gsm8kFineTuned}%`
+                    : 'Pending'}
+                </strong>
+              </span>
+              <span className="text-lg font-semibold text-emerald-400">
+                {selectedSummaryRow.gsm8kDelta !== null
+                  ? `${selectedSummaryRow.gsm8kDelta >= 0 ? '+' : ''}${selectedSummaryRow.gsm8kDelta}%`
+                  : '—'}
+              </span>
+            </div>
+          </div>
+
+          <div className="bg-[#0B0F17] border border-slate-800 rounded-lg p-3.5">
+            <div className="flex items-center justify-between text-xs text-slate-300">
+              <span className="font-medium inline-flex items-center">
+                IFEval &amp; PPL Delta
+                <InfoTooltip termKey="ppl" align="right" />
+              </span>
+              <span className="text-[10px] font-mono text-slate-400">Constraints</span>
+            </div>
+            <div className="mt-2 flex items-baseline justify-between font-mono tabular-nums">
+              <span className="text-xs text-slate-400">
+                IFEval {selectedSummaryRow.ifEvalBase}% →{' '}
+                <strong className="text-slate-100">
+                  {selectedSummaryRow.ifEvalFineTuned !== null
+                    ? `${selectedSummaryRow.ifEvalFineTuned}%`
+                    : '—'}
+                </strong>
+              </span>
+              <span className="text-lg font-semibold text-emerald-400">
+                {selectedSummaryRow.ifEvalDelta !== null
+                  ? `${selectedSummaryRow.ifEvalDelta >= 0 ? '+' : ''}${selectedSummaryRow.ifEvalDelta}%`
+                  : '—'}
+              </span>
+            </div>
+          </div>
+        </div>
+
+        {/* Fleet-Wide Base vs. Fine-Tuned Summary Comparison Table */}
+        <div className="overflow-x-auto">
+          <table
+            aria-label="Base vs Fine-Tuned Performance Summary Table"
+            className="w-full text-left border-collapse text-xs whitespace-nowrap"
+          >
+            <thead>
+              <tr className="border-b border-slate-800 text-slate-400">
+                <th className="py-2.5 pr-2 font-medium">Model &amp; Architecture</th>
+                <th className="py-2.5 px-2 font-semibold text-right text-slate-200 bg-slate-800/25">
+                  MMLU-Pro (Base → FT · Δ)
+                </th>
+                <th className="py-2.5 px-2 font-semibold text-right text-slate-200 bg-slate-800/25">
+                  HumanEval+ (Base → FT · Δ)
+                </th>
+                <th className="py-2.5 px-2 font-medium text-right">GSM8K (Base → FT · Δ)</th>
+                <th className="py-2.5 px-2 font-medium text-right">IFEval (Base → FT · Δ)</th>
+                <th className="py-2.5 px-2 font-medium text-right">Val PPL (Base → FT)</th>
+                <th className="py-2.5 pl-2 font-medium text-right">Mean Gain</th>
+              </tr>
+            </thead>
+            <tbody className="divide-y divide-slate-800/70 font-mono tabular-nums">
+              {summaryTableRows.map((row) => {
+                const isCurrent = row.modelId === selectedModel.id;
+                return (
+                  <tr
+                    key={row.modelId}
+                    onClick={() => onSelectModel(row.modelId)}
+                    className={`cursor-pointer transition-colors ${
+                      isCurrent ? 'bg-blue-600/15' : 'hover:bg-slate-800/30'
+                    }`}
+                  >
+                    <td className="py-2.5 pr-2 font-sans">
+                      <div className="font-semibold text-slate-100 flex items-center gap-1.5">
+                        <span>{row.modelName}</span>
+                        {isCurrent && (
+                          <span className="text-[10px] font-mono px-1.5 py-0.5 rounded bg-blue-600 text-white">
+                            Active
+                          </span>
+                        )}
+                      </div>
+                      <div className="text-[11px] text-slate-400 font-mono">
+                        {row.architecture} · {row.paramsBillions}B
+                      </div>
+                    </td>
+
+                    {/* Highlighted MMLU-Pro Base -> FT + Delta */}
+                    <td className="py-2.5 px-2 text-right bg-slate-800/15">
+                      {row.hasFineTuned ? (
+                        <div className="inline-flex items-center justify-end gap-1">
+                          <span className="text-slate-400">{row.mmluProBase}%</span>
+                          <span className="text-slate-500">→</span>
+                          <span className="text-slate-100 font-semibold">
+                            {row.mmluProFineTuned}%
+                          </span>
+                          <span className="px-1.5 py-0.5 rounded bg-emerald-500/15 text-emerald-400 font-semibold">
+                            {row.mmluProDelta! >= 0 ? `+${row.mmluProDelta}%` : `${row.mmluProDelta}%`}
+                          </span>
+                        </div>
+                      ) : (
+                        <span className="text-slate-400">{row.mmluProBase}% (Base)</span>
+                      )}
+                    </td>
+
+                    {/* Highlighted HumanEval+ Base -> FT + Delta */}
+                    <td className="py-2.5 px-2 text-right bg-slate-800/15">
+                      {row.hasFineTuned ? (
+                        <div className="inline-flex items-center justify-end gap-1">
+                          <span className="text-slate-400">{row.humanEvalBase}%</span>
+                          <span className="text-slate-500">→</span>
+                          <span className="text-slate-100 font-semibold">
+                            {row.humanEvalFineTuned}%
+                          </span>
+                          <span className="px-1.5 py-0.5 rounded bg-emerald-500/15 text-emerald-400 font-semibold">
+                            {row.humanEvalDelta! >= 0
+                              ? `+${row.humanEvalDelta}%`
+                              : `${row.humanEvalDelta}%`}
+                          </span>
+                        </div>
+                      ) : (
+                        <span className="text-slate-400">{row.humanEvalBase}% (Base)</span>
+                      )}
+                    </td>
+
+                    {/* GSM8K */}
+                    <td className="py-2.5 px-2 text-right">
+                      {row.hasFineTuned ? (
+                        <span>
+                          <span className="text-slate-400">{row.gsm8kBase}%</span>→
+                          <span className="text-slate-200">{row.gsm8kFineTuned}%</span>{' '}
+                          <span className="text-emerald-400">
+                            ({row.gsm8kDelta! >= 0 ? `+${row.gsm8kDelta}%` : `${row.gsm8kDelta}%`})
+                          </span>
+                        </span>
+                      ) : (
+                        <span className="text-slate-400">{row.gsm8kBase}%</span>
+                      )}
+                    </td>
+
+                    {/* IFEval */}
+                    <td className="py-2.5 px-2 text-right">
+                      {row.hasFineTuned ? (
+                        <span>
+                          <span className="text-slate-400">{row.ifEvalBase}%</span>→
+                          <span className="text-slate-200">{row.ifEvalFineTuned}%</span>{' '}
+                          <span className="text-emerald-400">
+                            ({row.ifEvalDelta! >= 0 ? `+${row.ifEvalDelta}%` : `${row.ifEvalDelta}%`})
+                          </span>
+                        </span>
+                      ) : (
+                        <span className="text-slate-400">{row.ifEvalBase}%</span>
+                      )}
+                    </td>
+
+                    {/* Perplexity */}
+                    <td className="py-2.5 px-2 text-right">
+                      {row.hasFineTuned ? (
+                        <span>
+                          <span className="text-slate-400">{row.perplexityBase}</span>→
+                          <span className="text-slate-200">{row.perplexityFineTuned}</span>{' '}
+                          <span className="text-emerald-400">({row.perplexityDelta})</span>
+                        </span>
+                      ) : (
+                        <span className="text-slate-400">{row.perplexityBase} ppl</span>
+                      )}
+                    </td>
+
+                    {/* Mean Accuracy Gain */}
+                    <td className="py-2.5 pl-2 text-right">
+                      {row.hasFineTuned ? (
+                        <span className="text-emerald-400 font-semibold">
+                          +{row.meanAccuracyGain}% · Ready
+                        </span>
+                      ) : (
+                        <span className="text-amber-400">Base Stored</span>
+                      )}
+                    </td>
+                  </tr>
+                );
+              })}
+            </tbody>
+          </table>
+        </div>
+      </section>
+
       {/* Side-by-Side Base vs. Fine-Tuned Radar Chart & Evaluation Matrix */}
       <section className="bg-[#111827] border border-slate-800/90 rounded-lg p-5">
         <div className="flex flex-col lg:flex-row lg:items-center justify-between gap-4 pb-4 border-b border-slate-800/80">
           <div>
             <h2 className="text-base font-semibold text-slate-100">
-              02. Side-by-Side Base vs. Fine-Tuned Radar &amp; Evaluation Matrix — {selectedModel.name}
+              03. Side-by-Side Base vs. Fine-Tuned Radar &amp; Detailed Metric Matrix — {selectedModel.name}
             </h2>
             <p className="text-xs text-slate-400 mt-0.5">
               Base Detected: {selectedModel.detectedAt}

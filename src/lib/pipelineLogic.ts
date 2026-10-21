@@ -1645,5 +1645,183 @@ ${input.safetensorsPlan.localDeployCommand}
   };
 }
 
+export const TRAINING_SERIES_STORAGE_KEY = 'forgeml.trainingSeriesByModel.v1';
+export const SELECTED_MODEL_STORAGE_KEY = 'forgeml.selectedModelId.v1';
+
+export interface PersistedTrainingMetricPoint {
+  step: number;
+  epoch: number;
+  trainLoss: number;
+  valLoss: number;
+  gradNorm: number;
+  learningRate: number;
+  tokensPerSec: number;
+}
+
+function isValidMetricPoint(item: unknown): item is PersistedTrainingMetricPoint {
+  if (!item || typeof item !== 'object') return false;
+  const candidate = item as Record<string, unknown>;
+  return (
+    typeof candidate.step === 'number' &&
+    Number.isFinite(candidate.step) &&
+    typeof candidate.epoch === 'number' &&
+    Number.isFinite(candidate.epoch) &&
+    typeof candidate.trainLoss === 'number' &&
+    Number.isFinite(candidate.trainLoss) &&
+    typeof candidate.valLoss === 'number' &&
+    Number.isFinite(candidate.valLoss) &&
+    typeof candidate.gradNorm === 'number' &&
+    Number.isFinite(candidate.gradNorm) &&
+    typeof candidate.learningRate === 'number' &&
+    Number.isFinite(candidate.learningRate) &&
+    typeof candidate.tokensPerSec === 'number' &&
+    Number.isFinite(candidate.tokensPerSec)
+  );
+}
+
+export function serializeTrainingSeriesMap(
+  seriesByModel: Record<string, PersistedTrainingMetricPoint[]>
+): string {
+  return JSON.stringify({
+    schemaVersion: 1,
+    updatedAt: new Date().toISOString(),
+    seriesByModel,
+  });
+}
+
+export function deserializeTrainingSeriesMap(
+  rawJson: string | null | undefined,
+  fallbackSeries: PersistedTrainingMetricPoint[],
+  modelIds: string[]
+): Record<string, PersistedTrainingMetricPoint[]> {
+  const defaultMap: Record<string, PersistedTrainingMetricPoint[]> = {};
+  for (const id of modelIds) {
+    defaultMap[id] = fallbackSeries.map((pt) => ({ ...pt }));
+  }
+
+  if (!rawJson || !rawJson.trim()) {
+    return defaultMap;
+  }
+
+  try {
+    const parsed = JSON.parse(rawJson) as Record<string, unknown>;
+    const rawMap =
+      parsed && typeof parsed === 'object' && parsed.seriesByModel && typeof parsed.seriesByModel === 'object'
+        ? (parsed.seriesByModel as Record<string, unknown>)
+        : (parsed as Record<string, unknown>);
+
+    const result: Record<string, PersistedTrainingMetricPoint[]> = { ...defaultMap };
+    for (const [modelId, arr] of Object.entries(rawMap)) {
+      if (Array.isArray(arr)) {
+        const validPoints = arr.filter(isValidMetricPoint);
+        if (validPoints.length > 0) {
+          result[modelId] = validPoints;
+        }
+      }
+    }
+    return result;
+  } catch {
+    return defaultMap;
+  }
+}
+
+export interface BenchmarkSummaryTableRow {
+  modelId: string;
+  modelName: string;
+  architecture: ArchitectureFamily;
+  paramsBillions: number;
+  hasFineTuned: boolean;
+  checkpointId?: string;
+  mmluProBase: number;
+  mmluProFineTuned: number | null;
+  mmluProDelta: number | null;
+  humanEvalBase: number;
+  humanEvalFineTuned: number | null;
+  humanEvalDelta: number | null;
+  gsm8kBase: number;
+  gsm8kFineTuned: number | null;
+  gsm8kDelta: number | null;
+  ifEvalBase: number;
+  ifEvalFineTuned: number | null;
+  ifEvalDelta: number | null;
+  perplexityBase: number;
+  perplexityFineTuned: number | null;
+  perplexityDelta: number | null;
+  meanAccuracyGain: number | null;
+  verdict: 'PROMOTE_TO_PRODUCTION' | 'REGRESSION_ALERT' | 'MARGINAL_GAIN' | 'BASE_ONLY';
+}
+
+export function buildBenchmarkSummaryTableRows(
+  models: Array<{
+    id: string;
+    name: string;
+    architecture: ArchitectureFamily;
+    paramsBillions: number;
+    fineTunedCheckpointId?: string;
+    baseBenchmarks: BenchmarkMetrics;
+    fineTunedBenchmarks?: BenchmarkMetrics;
+  }>
+): BenchmarkSummaryTableRow[] {
+  return models.map((m) => {
+    const base = m.baseBenchmarks;
+    const ft = m.fineTunedBenchmarks;
+    if (!ft) {
+      return {
+        modelId: m.id,
+        modelName: m.name,
+        architecture: m.architecture,
+        paramsBillions: m.paramsBillions,
+        hasFineTuned: false,
+        checkpointId: m.fineTunedCheckpointId,
+        mmluProBase: base.mmluPro,
+        mmluProFineTuned: null,
+        mmluProDelta: null,
+        humanEvalBase: base.humanEval,
+        humanEvalFineTuned: null,
+        humanEvalDelta: null,
+        gsm8kBase: base.gsm8k,
+        gsm8kFineTuned: null,
+        gsm8kDelta: null,
+        ifEvalBase: base.ifEval,
+        ifEvalFineTuned: null,
+        ifEvalDelta: null,
+        perplexityBase: base.perplexity,
+        perplexityFineTuned: null,
+        perplexityDelta: null,
+        meanAccuracyGain: null,
+        verdict: 'BASE_ONLY',
+      };
+    }
+
+    const comp = compareBaseAndFineTuned(base, ft);
+    return {
+      modelId: m.id,
+      modelName: m.name,
+      architecture: m.architecture,
+      paramsBillions: m.paramsBillions,
+      hasFineTuned: true,
+      checkpointId: m.fineTunedCheckpointId,
+      mmluProBase: base.mmluPro,
+      mmluProFineTuned: ft.mmluPro,
+      mmluProDelta: comp.deltas.mmluPro,
+      humanEvalBase: base.humanEval,
+      humanEvalFineTuned: ft.humanEval,
+      humanEvalDelta: comp.deltas.humanEval,
+      gsm8kBase: base.gsm8k,
+      gsm8kFineTuned: ft.gsm8k,
+      gsm8kDelta: comp.deltas.gsm8k,
+      ifEvalBase: base.ifEval,
+      ifEvalFineTuned: ft.ifEval,
+      ifEvalDelta: comp.deltas.ifEval,
+      perplexityBase: base.perplexity,
+      perplexityFineTuned: ft.perplexity,
+      perplexityDelta: comp.deltas.perplexity,
+      meanAccuracyGain: comp.averageAccuracyGain,
+      verdict: comp.verdict,
+    };
+  });
+}
+
+
 
 

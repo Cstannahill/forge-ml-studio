@@ -10,7 +10,17 @@ import {
   generateContainerArtifacts,
   evaluateGpuThresholds,
   buildPlainLanguageBenchmarkAnalysis,
+  buildSafetensorsExportPlan,
+  createSafetensorsBinaryArtifact,
+  computeTrainingProgressTelemetry,
+  generateStandardizedModelCard,
+  buildRadarChartComparisonData,
+  serializeTrainingSeriesMap,
+  deserializeTrainingSeriesMap,
+  buildBenchmarkSummaryTableRows,
 } from './pipelineLogic.ts';
+import { CURATED_DATASET_BLENDS } from '../data/curatedDatasetBlends.ts';
+import { ML_GLOSSARY } from './glossaryData.ts';
 
 test('estimateVramRequirements calculates lower activation footprint for LFM2.5 than standard architectures', () => {
   const qwenEst = estimateVramRequirements({
@@ -219,14 +229,6 @@ test('buildPlainLanguageBenchmarkAnalysis explains strengths, regressions, and o
   assert.ok(analysis.otherDifferences.length >= 2);
 });
 
-import {
-  buildSafetensorsExportPlan,
-  createSafetensorsBinaryArtifact,
-  computeTrainingProgressTelemetry,
-  generateStandardizedModelCard,
-} from './pipelineLogic.ts';
-import { CURATED_DATASET_BLENDS } from '../data/curatedDatasetBlends.ts';
-
 test('buildSafetensorsExportPlan and createSafetensorsBinaryArtifact produce spec-compliant single-file Safetensors for sub-2B models', () => {
   const plan = buildSafetensorsExportPlan({
     modelId: 'Qwen/Qwen3.5-2B-Instruct',
@@ -367,9 +369,6 @@ test('generateStandardizedModelCard extracts size, architecture, base vs fine-tu
   assert.equal(card.extractedMetadata.architecture, 'Qwen3.5');
 });
 
-import { buildRadarChartComparisonData } from './pipelineLogic.ts';
-import { ML_GLOSSARY } from './glossaryData.ts';
-
 test('buildSafetensorsExportPlan and generateStandardizedModelCard reflect GGUF-Q4_K_M, GPTQ, and ONNX deployment formats', () => {
   const ggufPlan = buildSafetensorsExportPlan({
     modelId: 'Qwen/Qwen3.5-2B-Instruct',
@@ -509,4 +508,84 @@ test('ML_GLOSSARY contains comprehensive instructive definitions (whatItIs and w
   assert.ok(ML_GLOSSARY.onnx.whatItTellsUs.length > 20);
 });
 
+test('serializeTrainingSeriesMap and deserializeTrainingSeriesMap persist and restore per-model trainingSeries accurately', () => {
+  const fallback = [
+    {
+      step: 50,
+      epoch: 0.25,
+      trainLoss: 1.98,
+      valLoss: 2.04,
+      gradNorm: 1.42,
+      learningRate: 0.0002,
+      tokensPerSec: 9420,
+    },
+  ];
+  const customSeries = [
+    ...fallback,
+    {
+      step: 400,
+      epoch: 2.0,
+      trainLoss: 0.75,
+      valLoss: 0.86,
+      gradNorm: 0.65,
+      learningRate: 0.0002,
+      tokensPerSec: 9925,
+    },
+  ];
 
+  const serialized = serializeTrainingSeriesMap({
+    'Qwen/Qwen3.5-2B-Instruct': customSeries,
+  });
+
+  const restored = deserializeTrainingSeriesMap(serialized, fallback, [
+    'Qwen/Qwen3.5-2B-Instruct',
+    'LiquidAI/LFM2.5-1.2B-Instruct',
+  ]);
+
+  assert.equal(restored['Qwen/Qwen3.5-2B-Instruct'].length, 2);
+  assert.equal(restored['Qwen/Qwen3.5-2B-Instruct'][1].step, 400);
+  assert.equal(restored['LiquidAI/LFM2.5-1.2B-Instruct'].length, 1);
+  assert.equal(restored['LiquidAI/LFM2.5-1.2B-Instruct'][0].step, 50);
+
+  // Verify graceful fallback on corrupted JSON
+  const corrupted = deserializeTrainingSeriesMap('{invalid_json', fallback, [
+    'Qwen/Qwen3.5-2B-Instruct',
+  ]);
+  assert.equal(corrupted['Qwen/Qwen3.5-2B-Instruct'].length, 1);
+});
+
+test('buildBenchmarkSummaryTableRows computes base vs fine-tuned MMLU-Pro and HumanEval deltas accurately', () => {
+  const rows = buildBenchmarkSummaryTableRows([
+    {
+      id: 'Qwen/Qwen3.5-2B-Instruct',
+      name: 'Qwen3.5-2B-Instruct',
+      architecture: 'Qwen3.5',
+      paramsBillions: 2.0,
+      fineTunedCheckpointId: 'ft-qwen3.5-2b-r32',
+      baseBenchmarks: {
+        mmluPro: 61.4,
+        gsm8k: 76.8,
+        humanEval: 71.2,
+        ifEval: 73.5,
+        mtBench: 7.82,
+        perplexity: 5.84,
+        tokensPerSec: 248.6,
+      },
+      fineTunedBenchmarks: {
+        mmluPro: 65.8,
+        gsm8k: 83.4,
+        humanEval: 79.1,
+        ifEval: 81.2,
+        mtBench: 8.36,
+        perplexity: 5.08,
+        tokensPerSec: 247.9,
+      },
+    },
+  ]);
+
+  assert.equal(rows.length, 1);
+  assert.equal(rows[0].hasFineTuned, true);
+  assert.equal(rows[0].mmluProDelta, 4.4);
+  assert.equal(rows[0].humanEvalDelta, 7.9);
+  assert.equal(rows[0].verdict, 'PROMOTE_TO_PRODUCTION');
+});

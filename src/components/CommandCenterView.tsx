@@ -47,6 +47,7 @@ interface CommandCenterViewProps {
   trainingSeries: TrainingMetricPoint[];
   isTrainingActive: boolean;
   onRunTrainingStep: () => void;
+  onResetTrainingSeries?: () => void;
   onRunHpoSweep: () => void;
   activeHpoConfig: HyperparameterConfig;
   onUpdateHpoConfig: (cfg: HyperparameterConfig) => void;
@@ -83,6 +84,7 @@ export const CommandCenterView: React.FC<CommandCenterViewProps> = ({
   trainingSeries,
   isTrainingActive,
   onRunTrainingStep,
+  onResetTrainingSeries,
   onRunHpoSweep,
   activeHpoConfig,
   onUpdateHpoConfig,
@@ -474,8 +476,26 @@ export const CommandCenterView: React.FC<CommandCenterViewProps> = ({
             </p>
           </div>
 
-          <div className="flex flex-wrap items-center gap-2 text-xs font-mono">
-            <label htmlFor="target-epochs-select" className="text-slate-400">
+          <div className="flex flex-wrap xl:flex-nowrap items-center gap-2 text-xs font-mono shrink-0">
+            <span
+              role="status"
+              aria-label="LocalStorage Training Progress Persistence Status"
+              className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded bg-[#0B0F17] border border-slate-800 text-emerald-400 whitespace-nowrap"
+            >
+              <HardDrive className="w-3.5 h-3.5 shrink-0" />
+              Persisted (Step {latestPoint.step} · {trainingSeries.length} pts)
+            </span>
+            {onResetTrainingSeries && trainingSeries.length > 8 && (
+              <button
+                type="button"
+                onClick={onResetTrainingSeries}
+                className="inline-flex items-center gap-1 px-2.5 py-1 rounded bg-slate-800 hover:bg-slate-700 text-slate-300 border border-slate-700 transition-colors whitespace-nowrap"
+              >
+                <RefreshCw className="w-3 h-3 shrink-0" />
+                Reset Series
+              </button>
+            )}
+            <label htmlFor="target-epochs-select" className="text-slate-400 whitespace-nowrap">
               Horizon:
             </label>
             <select
