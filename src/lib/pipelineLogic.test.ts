@@ -978,4 +978,115 @@ test('parseCustomDatasetUploadText, runAutomatedRedTeamStressSuite, generateLoca
   assert.equal(filteredActions[0].id, 'act-grpo');
 });
 
+import {
+  CURATED_VISION_BLENDS,
+  INITIAL_VISION_MODELS,
+  auditVisionTokenizerSpecialTokens,
+  buildInitialVisionSamples,
+  buildVisionCurriculumPlan,
+  calculateVisualPatchTokens,
+  cleanAndNormalizeVisionSample,
+  computeVisionPipelineHardwarePlan,
+  generateVisionTeacherDistillationBatch,
+  parseCustomVisionDatasetUpload,
+  pruneVisionDatasetByAlignmentAndPhash,
+  validateVisionDatasetCorpus,
+} from './visionPipelineLogic.ts';
+
+test('INITIAL_VISION_MODELS includes LFM2.5-VL-450M, LFM2.5-VL-1.6B, Qwen3.5-VL-0.8B, Qwen3.5-VL-2B, and Gemma4-E2B-Vision', () => {
+  const modelIds = INITIAL_VISION_MODELS.map((m) => m.id);
+  assert.ok(modelIds.includes('LiquidAI/LFM2.5-VL-450M-Instruct'));
+  assert.ok(modelIds.includes('LiquidAI/LFM2.5-VL-1.6B-Instruct'));
+  assert.ok(modelIds.includes('Qwen/Qwen3.5-VL-0.8B-Instruct'));
+  assert.ok(modelIds.includes('Qwen/Qwen3.5-VL-2B-Instruct'));
+  assert.ok(modelIds.includes('google/gemma-4-e2b-vision-it'));
+  assert.equal(CURATED_VISION_BLENDS.length, 5);
+});
+
+test('computeVisionPipelineHardwarePlan isolates VLM gradients, calculates frozen vs unfrozen Vision Tower VRAM, and outputs mmproj-f16.gguf', () => {
+  const lfm450m = INITIAL_VISION_MODELS[0];
+  const frozenPlan = computeVisionPipelineHardwarePlan(
+    lfm450m,
+    {
+      freezeVisionTower: true,
+      trainMlpProjector: true,
+      applyLoraToLlmBackbone: true,
+      minPixels: 256 * 28 * 28,
+      maxPixels: 768 * 28 * 28,
+      patchSizePx: 28,
+      visionProjectorLrMultiplier: 5,
+      exportSeparateMmprojFp16: true,
+    },
+    32,
+    8
+  );
+  const unfrozenPlan = computeVisionPipelineHardwarePlan(
+    lfm450m,
+    {
+      freezeVisionTower: false,
+      trainMlpProjector: true,
+      applyLoraToLlmBackbone: true,
+      minPixels: 256 * 28 * 28,
+      maxPixels: 768 * 28 * 28,
+      patchSizePx: 28,
+      visionProjectorLrMultiplier: 5,
+      exportSeparateMmprojFp16: true,
+    },
+    32,
+    8
+  );
+  assert.ok(frozenPlan.visionTowerVramGb < unfrozenPlan.visionTowerVramGb);
+  assert.ok(frozenPlan.mmprojExportFilename.endsWith('-f16.gguf'));
+  assert.ok(frozenPlan.modalityIsolationGuarantee.includes('ISOLATED_VLM_TRACK'));
+});
+
+test('Vision Dataset Studio functions: validateVisionDatasetCorpus, cleanAndNormalizeVisionSample, generateVisionTeacherDistillationBatch, pruneVisionDatasetByAlignmentAndPhash, buildVisionCurriculumPlan, auditVisionTokenizerSpecialTokens, and parseCustomVisionDatasetUpload work end-to-end', () => {
+  const initialSamples = buildInitialVisionSamples('QWEN_VL_CHATML');
+  assert.equal(initialSamples.length, 5);
+  assert.ok(initialSamples[0].formattedPayload.includes('<|vision_start|><|image_pad|><|vision_end|>'));
+
+  const reportBefore = validateVisionDatasetCorpus(initialSamples);
+  assert.equal(reportBefore.totalSamples, 5);
+  assert.equal(reportBefore.exifOrFacePiiCount, 1);
+
+  const cleanedSamples = initialSamples.map((s) =>
+    cleanAndNormalizeVisionSample(s, 'QWEN_VL_CHATML')
+  );
+  const reportAfter = validateVisionDatasetCorpus(cleanedSamples);
+  assert.equal(reportAfter.exifOrFacePiiCount, 0);
+  assert.equal(reportAfter.healthScore, 100);
+
+  const distilled = generateVisionTeacherDistillationBatch({
+    teacherModel: 'Qwen2.5-VL-72B-Instruct',
+    taskCategory: 'UI_GROUNDING',
+    seedTopic: 'Mobile checkout button grounding',
+    targetFormat: 'QWEN_VL_CHATML',
+  });
+  assert.equal(distilled.samples.length, 2);
+  assert.ok(distilled.avgJudgeScore >= 9.0);
+
+  const pruned = pruneVisionDatasetByAlignmentAndPhash(cleanedSamples, 0.90);
+  assert.ok(pruned.retainedSamples.length >= 4);
+  assert.ok(pruned.meanAlignmentAfter >= pruned.meanAlignmentBefore);
+
+  const curriculum = buildVisionCurriculumPlan(cleanedSamples, 600);
+  assert.equal(curriculum.phases.length, 3);
+  assert.equal(curriculum.orderedSamples.length, 5);
+
+  const tokAudit = auditVisionTokenizerSpecialTokens('Qwen3.5');
+  assert.equal(tokAudit.allSpecialTokensAtomic, true);
+  assert.equal(tokAudit.tokens.length, 7);
+
+  const customParsed = parseCustomVisionDatasetUpload(
+    '{"image": "s3://vision/receipt_01.png", "width": 1280, "height": 960, "instruction": "Extract total", "output": "{\\"total\\": 42.50}", "box2d": [100, 200, 800, 900]}',
+    'CustomVision/receipts.jsonl',
+    'QWEN_VL_CHATML'
+  );
+  assert.equal(customParsed.detectedSchema, 'VISION_JSONL');
+  assert.equal(customParsed.samples.length, 1);
+  assert.equal(calculateVisualPatchTokens(1024, 768), 1003);
+});
+
+
+
 

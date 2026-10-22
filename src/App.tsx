@@ -51,6 +51,19 @@ import {
 } from './components/AgenticOrchestratorView';
 import { CloudAndContainerView } from './components/CloudAndContainerView';
 import { CommandPaletteModal } from './components/CommandPaletteModal';
+import { VisionCommandCenterPanel } from './components/VisionCommandCenterPanel';
+import { VisionDatasetStudioView } from './components/VisionDatasetStudioView';
+import {
+  INITIAL_VISION_MODELS,
+  NormalizedVisionSample,
+  PipelineModalityTrack,
+  RegisteredVisionModel,
+  VisionTargetFormat,
+  buildInitialVisionSamples,
+  formatVisionSamplePayload,
+  validateVisionDatasetCorpus,
+} from './lib/visionPipelineLogic';
+import { InfoTooltip } from './components/InfoTooltip';
 
 type ActiveTabId = 'command' | 'datasets' | 'benchmarks' | 'agents' | 'cloud';
 
@@ -159,7 +172,7 @@ export default function App() {
   >({});
   const [isExplainingBenchmarks, setIsExplainingBenchmarks] = useState<boolean>(false);
 
-  // Dataset Studio State
+  // Dataset Studio State (Text Generation Pipeline)
   const [targetFormat, setTargetFormat] = useState<TargetFormat>('chatml');
   const [samples, setSamples] = useState<NormalizedDatasetSample[]>(() =>
     buildInitialNormalizedSamples('chatml')
@@ -168,6 +181,38 @@ export default function App() {
     INITIAL_DATASET_VERSIONS
   );
   const [isDatasetBusy, setIsDatasetBusy] = useState<boolean>(false);
+
+  // Isolated Vision-Language (VLM) Pipeline Track State (Zero Text Interference)
+  const [pipelineTrack, setPipelineTrack] = useState<PipelineModalityTrack>('TEXT_LLM');
+  const [visionModels, setVisionModels] =
+    useState<RegisteredVisionModel[]>(INITIAL_VISION_MODELS);
+  const [selectedVisionModelId, setSelectedVisionModelId] = useState<string>(
+    INITIAL_VISION_MODELS[0].id
+  );
+  const [visionTargetFormat, setVisionTargetFormat] =
+    useState<VisionTargetFormat>('QWEN_VL_CHATML');
+  const [visionSamples, setVisionSamples] = useState<NormalizedVisionSample[]>(() =>
+    buildInitialVisionSamples('QWEN_VL_CHATML')
+  );
+  const [visionDatasetCommits, setVisionDatasetCommits] = useState<DatasetVersionCommit[]>([
+    {
+      versionId: 'v1.4.0-vision',
+      commitHash: 'sha256:7c31e9a',
+      timestamp: '2026-10-20 15:00 UTC',
+      sourceDatasets: [
+        'HuggingFaceM4/Docmatix-Sub2B-Clean',
+        'agentsea/wave-ui-25k-grounded',
+        'LiquidAI/Edge-Spatial-VQA-50k',
+      ],
+      targetFormat: 'chatml',
+      sampleCount: 5,
+      healthScore: 98,
+      cloudSynced: true,
+      cloudUri: 's3://forgeml-vision-artifacts/v1.4.0-vision/manifest.parquet',
+      notes:
+        'Initial multimodal VLM corpus with [0, 1000] normalized bounding boxes & NaViT patch budgets',
+    },
+  ]);
 
   // Agentic Orchestrator State
   const [activeProvider, setActiveProvider] = useState<AgentProviderId>('gemini');
@@ -1070,6 +1115,22 @@ export default function App() {
       keywords: ['grpo', 'rlvr', 'reward', 'verifier', 'math', 'code'],
     },
     {
+      id: 'track-text-llm',
+      title: 'Switch Pipeline Track -> Pure Text Generation (LLM)',
+      subtitle: '100% isolated text-only SFT, ORPO/SimPO & GRPO pipeline',
+      category: 'PIPELINE_ACTION',
+      shortcutHint: pipelineTrack === 'TEXT_LLM' ? 'Active' : 'Track A',
+      keywords: ['text', 'llm', 'pipeline', 'track'],
+    },
+    {
+      id: 'track-vision-vlm',
+      title: 'Switch Pipeline Track -> Isolated Vision-Language (VLM: Qwen3.5-VL / LFM2.5-VL)',
+      subtitle: 'Dedicated multimodal image+text pipeline (LFM2.5-VL-450M/1.6B & Qwen3.5-VL-0.8B/2B)',
+      category: 'PIPELINE_ACTION',
+      shortcutHint: pipelineTrack === 'VISION_VLM' ? 'Active' : 'Track B',
+      keywords: ['vision', 'vlm', 'image', 'multimodal', '450m', '1.6b', 'qwen3.5-vl', 'lfm2.5-vl'],
+    },
+    {
       id: 'theme-soft',
       title: 'Theme: Gruvbox Dark Warm Soft (#2F2F2F)',
       subtitle: 'Default warm charcoal surface preset',
@@ -1095,12 +1156,102 @@ export default function App() {
     },
   ];
 
+  const handleChangeVisionTargetFormat = (nextFmt: VisionTargetFormat) => {
+    setVisionTargetFormat(nextFmt);
+    setVisionSamples((prev) =>
+      prev.map((s) => ({
+        ...s,
+        targetFormat: nextFmt,
+        formattedPayload: formatVisionSamplePayload(s, nextFmt),
+      }))
+    );
+    appendLog(
+      'INFO',
+      'DATA_PIPELINE',
+      `Re-serialized ${visionSamples.length} Vision-Language samples into ${nextFmt}.`,
+      `track=VISION_VLM | format=${nextFmt}`
+    );
+  };
+
+  const handleUpdateVisionSamples = (
+    nextSamples: NormalizedVisionSample[],
+    logMessage: string
+  ) => {
+    setVisionSamples(nextSamples);
+    appendLog(
+      'INFO',
+      'DATA_PIPELINE',
+      `[VISION_DATASET_STUDIO] ${logMessage}`,
+      `track=VISION_VLM | samples=${nextSamples.length}`
+    );
+  };
+
+  const handleCommitVisionDatasetVersion = (notes: string) => {
+    const report = validateVisionDatasetCorpus(visionSamples);
+    const nextMinor = visionDatasetCommits.length + 4;
+    const versionId = `v1.${nextMinor}.0-vision`;
+    const hashHex = Math.abs(
+      visionSamples.reduce((acc, s) => acc + s.totalTokens * 31 + s.id.length, 7919)
+    )
+      .toString(16)
+      .slice(0, 7)
+      .padStart(7, 'a');
+    const newCommit: DatasetVersionCommit = {
+      versionId,
+      commitHash: `sha256:${hashHex}`,
+      timestamp: 'Just now · Vision DVC',
+      sourceDatasets: Array.from(new Set(visionSamples.map((s) => s.sourceDataset))).slice(0, 4),
+      targetFormat: 'chatml',
+      sampleCount: visionSamples.length,
+      healthScore: report.healthScore,
+      cloudSynced: true,
+      cloudUri: `s3://forgeml-vision-artifacts/${versionId}/manifest.parquet`,
+      notes: notes.trim() || 'Vision-Language dataset snapshot',
+    };
+    setVisionDatasetCommits((prev) => [newCommit, ...prev]);
+    appendLog(
+      'INFO',
+      'DATA_PIPELINE',
+      `Committed immutable Vision DVC snapshot ${versionId} (${newCommit.commitHash}) with ${visionSamples.length} image-text pairs.`,
+      `track=VISION_VLM | health=${report.healthScore}%`
+    );
+  };
+
+  const handleTriggerVisionFineTune = (visionModelId: string) => {
+    setVisionModels((prev) =>
+      prev.map((vm) => {
+        if (vm.id !== visionModelId) return vm;
+        const current = vm.fineTunedVisionBenchmarks ?? vm.baseVisionBenchmarks;
+        return {
+          ...vm,
+          status: 'FINE_TUNED_READY',
+          fineTunedVisionBenchmarks: {
+            mmmu: Number(Math.min(82.0, current.mmmu + 2.4).toFixed(1)),
+            docVqa: Number(Math.min(97.5, current.docVqa + 1.9).toFixed(1)),
+            mathVista: Number(Math.min(86.0, current.mathVista + 2.6).toFixed(1)),
+            realWorldQa: Number(Math.min(88.0, current.realWorldQa + 2.2).toFixed(1)),
+            groundingIoU: Number(Math.min(94.0, current.groundingIoU + 2.8).toFixed(1)),
+            visionTokensPerSec: current.visionTokensPerSec,
+          },
+        };
+      })
+    );
+    appendLog(
+      'METRIC',
+      'TRAINER',
+      `Completed isolated Vision-Language fine-tuning pass on ${visionModelId} (Vision Tower frozen, MLP Connector + LLM DoRA tuned). Zero interference with Text LLM checkpoints.`,
+      `track=VISION_VLM | model=${visionModelId}`
+    );
+  };
+
   const handleExecuteCommandPaletteAction = (actionId: string) => {
     if (actionId === 'nav-command') setActiveTab('command');
     else if (actionId === 'nav-datasets') setActiveTab('datasets');
     else if (actionId === 'nav-benchmarks') setActiveTab('benchmarks');
     else if (actionId === 'nav-agents') setActiveTab('agents');
     else if (actionId === 'nav-cloud') setActiveTab('cloud');
+    else if (actionId === 'track-text-llm') setPipelineTrack('TEXT_LLM');
+    else if (actionId === 'track-vision-vlm') setPipelineTrack('VISION_VLM');
     else if (actionId.startsWith('model-')) {
       const targetId = actionId.replace('model-', '');
       setSelectedModelId(targetId);
@@ -1224,67 +1375,151 @@ export default function App() {
       )}
 
       {/* Main Content Container */}
-      <main className="flex-1 max-w-[1400px] w-full mx-auto px-4 sm:px-6 py-8">
+      <main className="flex-1 max-w-[1400px] w-full mx-auto px-4 sm:px-6 py-8 space-y-6">
+        {/* Isolated Pipeline Modality Track Switcher (Pure Text LLM vs. Isolated Vision-Language VLM) */}
+        <div className="bg-[#22211F] border border-[#4A453E] rounded-xl p-4 flex flex-col lg:flex-row lg:items-center justify-between gap-4">
+          <div className="space-y-0.5">
+            <div className="flex items-center gap-2 text-xs font-semibold text-[#FFE9B1]">
+              <span>Modality Pipeline Track Isolation</span>
+              <InfoTooltip glossaryKey="vlmIsolatedPipeline" />
+              <span className="px-2 py-0.5 text-[10px] font-mono rounded bg-[#1D2021] border border-[#8EC07C]/40 text-[#8EC07C]">
+                {pipelineTrack === 'TEXT_LLM'
+                  ? 'Track A: Pure Text Generation (Zero Vision Overhead)'
+                  : 'Track B: Isolated Vision-Language VLM (Zero Text Interference)'}
+              </span>
+            </div>
+            <p className="text-xs text-[#A89984]">
+              Separating Pure Text LLM training from Vision-Language (VLM) projector &amp; patch training prevents modality gradient interference on sub-2B models.
+            </p>
+          </div>
+
+          <div
+            role="group"
+            aria-label="Pipeline Modality Track Switcher"
+            className="flex flex-wrap items-center gap-2 bg-[#1D2021] p-1.5 rounded-xl border border-[#3C3836] shrink-0"
+          >
+            <button
+              type="button"
+              onClick={() => setPipelineTrack('TEXT_LLM')}
+              className={`px-3.5 py-2 text-xs font-medium rounded-lg transition-colors ${
+                pipelineTrack === 'TEXT_LLM'
+                  ? 'bg-[#458588] text-[#FFE9B1] font-semibold'
+                  : 'text-[#A89984] hover:text-[#FFE9B1]'
+              }`}
+            >
+              Text Generation Pipeline (Pure LLM)
+            </button>
+            <button
+              type="button"
+              onClick={() => setPipelineTrack('VISION_VLM')}
+              className={`px-3.5 py-2 text-xs font-medium rounded-lg transition-colors ${
+                pipelineTrack === 'VISION_VLM'
+                  ? 'bg-[#8EC07C] text-[#1D2021] font-semibold'
+                  : 'text-[#A89984] hover:text-[#FFE9B1]'
+              }`}
+            >
+              Vision-Language Pipeline (Qwen3.5-VL · LFM2.5-VL 450M/1.6B)
+            </button>
+          </div>
+        </div>
+
         {activeTab === 'command' && (
-          <CommandCenterView
-            models={models}
-            selectedModelId={selectedModelId}
-            onSelectModel={setSelectedModelId}
-            trainingSeries={trainingSeries}
-            isTrainingActive={isTrainingActive}
-            onRunTrainingStep={handleRunTrainingStep}
-            onResetTrainingSeries={handleResetTrainingSeries}
-            onRollbackTrainingToIndex={handleRollbackTrainingToIndex}
-            onSimulateOverfitStep={handleSimulateOverfitStep}
-            onApplyStage2AlignmentBoost={handleApplyStage2AlignmentBoost}
-            onApplyStage3GrpoBoost={handleApplyStage3GrpoBoost}
-            onOpenCommandPalette={() => setIsCommandPaletteOpen(true)}
-            onRunHpoSweep={handleRunHpoSweep}
-            activeHpoConfig={activeHpoConfig}
-            onUpdateHpoConfig={setActiveHpoConfig}
-            logs={logs}
-            activeLogger={activeLogger}
-            onSelectLogger={setActiveLogger}
-            onClearLogs={() => setLogs([])}
-            gpuStats={gpuStats}
-            vramHistoryGb={vramHistoryGb}
-            activeDatasetCommit={datasetVersions[0]}
-            gpuThresholds={gpuThresholds}
-            onUpdateGpuThresholds={handleUpdateGpuThresholds}
-            onSimulateGpuStressSpike={handleSimulateGpuStressSpike}
-            onMitigateGpuOverload={handleMitigateGpuOverload}
-            onRecordSafetensorsExport={handleRecordSafetensorsExport}
-          />
+          <div className="space-y-8">
+            {pipelineTrack === 'VISION_VLM' && (
+              <VisionCommandCenterPanel
+                visionModels={visionModels}
+                selectedVisionModelId={selectedVisionModelId}
+                onSelectVisionModel={setSelectedVisionModelId}
+                onTriggerVisionFineTune={handleTriggerVisionFineTune}
+                onOpenVisionDatasetStudio={() => setActiveTab('datasets')}
+                activeVisionSampleCount={visionSamples.length}
+              />
+            )}
+            <CommandCenterView
+              models={models}
+              selectedModelId={selectedModelId}
+              onSelectModel={setSelectedModelId}
+              trainingSeries={trainingSeries}
+              isTrainingActive={isTrainingActive}
+              onRunTrainingStep={handleRunTrainingStep}
+              onResetTrainingSeries={handleResetTrainingSeries}
+              onRollbackTrainingToIndex={handleRollbackTrainingToIndex}
+              onSimulateOverfitStep={handleSimulateOverfitStep}
+              onApplyStage2AlignmentBoost={handleApplyStage2AlignmentBoost}
+              onApplyStage3GrpoBoost={handleApplyStage3GrpoBoost}
+              onOpenCommandPalette={() => setIsCommandPaletteOpen(true)}
+              onRunHpoSweep={handleRunHpoSweep}
+              activeHpoConfig={activeHpoConfig}
+              onUpdateHpoConfig={setActiveHpoConfig}
+              logs={logs}
+              activeLogger={activeLogger}
+              onSelectLogger={setActiveLogger}
+              onClearLogs={() => setLogs([])}
+              gpuStats={gpuStats}
+              vramHistoryGb={vramHistoryGb}
+              activeDatasetCommit={datasetVersions[0]}
+              gpuThresholds={gpuThresholds}
+              onUpdateGpuThresholds={handleUpdateGpuThresholds}
+              onSimulateGpuStressSpike={handleSimulateGpuStressSpike}
+              onMitigateGpuOverload={handleMitigateGpuOverload}
+              onRecordSafetensorsExport={handleRecordSafetensorsExport}
+            />
+          </div>
         )}
 
-        {activeTab === 'datasets' && (
-          <DatasetStudioView
-            samples={samples}
-            targetFormat={targetFormat}
-            onChangeTargetFormat={handleChangeTargetFormat}
-            onIngestDatasets={handleIngestDatasets}
-            onApplyCuratedBlend={handleApplyCuratedBlend}
-            onRunAgenticCleanAndTag={handleRunAgenticCleanAndTag}
-            onCommitDatasetVersion={handleCommitDatasetVersion}
-            onAppendSamples={handleAppendDatasetSamples}
-            onReplaceSamples={handleReplaceDatasetSamples}
-            datasetVersions={datasetVersions}
-            isBusy={isDatasetBusy}
-          />
-        )}
+        {activeTab === 'datasets' &&
+          (pipelineTrack === 'VISION_VLM' ? (
+            <VisionDatasetStudioView
+              visionModels={visionModels}
+              selectedVisionModelId={selectedVisionModelId}
+              onSelectVisionModel={setSelectedVisionModelId}
+              visionSamples={visionSamples}
+              visionTargetFormat={visionTargetFormat}
+              onChangeVisionTargetFormat={handleChangeVisionTargetFormat}
+              onUpdateVisionSamples={handleUpdateVisionSamples}
+              visionDatasetCommits={visionDatasetCommits}
+              onCommitVisionDatasetVersion={handleCommitVisionDatasetVersion}
+            />
+          ) : (
+            <DatasetStudioView
+              samples={samples}
+              targetFormat={targetFormat}
+              onChangeTargetFormat={handleChangeTargetFormat}
+              onIngestDatasets={handleIngestDatasets}
+              onApplyCuratedBlend={handleApplyCuratedBlend}
+              onRunAgenticCleanAndTag={handleRunAgenticCleanAndTag}
+              onCommitDatasetVersion={handleCommitDatasetVersion}
+              onAppendSamples={handleAppendDatasetSamples}
+              onReplaceSamples={handleReplaceDatasetSamples}
+              datasetVersions={datasetVersions}
+              isBusy={isDatasetBusy}
+            />
+          ))}
 
         {activeTab === 'benchmarks' && (
-          <ModelBenchmarksView
-            models={models}
-            selectedModelId={selectedModelId}
-            onSelectModel={setSelectedModelId}
-            onRegisterNewBaseModel={handleRegisterNewBaseModel}
-            onTriggerFineTuneAndCompare={(id) => handleTriggerFineTuneAndCompare(id)}
-            plainExplanations={plainExplanations}
-            onExplainBenchmarksWithLlm={handleExplainBenchmarksWithLlm}
-            onSendFlaggedPromptToDatasetStudio={handleSendFlaggedPromptToDatasetStudio}
-            isExplaining={isExplainingBenchmarks}
-          />
+          <div className="space-y-8">
+            {pipelineTrack === 'VISION_VLM' && (
+              <VisionCommandCenterPanel
+                visionModels={visionModels}
+                selectedVisionModelId={selectedVisionModelId}
+                onSelectVisionModel={setSelectedVisionModelId}
+                onTriggerVisionFineTune={handleTriggerVisionFineTune}
+                onOpenVisionDatasetStudio={() => setActiveTab('datasets')}
+                activeVisionSampleCount={visionSamples.length}
+              />
+            )}
+            <ModelBenchmarksView
+              models={models}
+              selectedModelId={selectedModelId}
+              onSelectModel={setSelectedModelId}
+              onRegisterNewBaseModel={handleRegisterNewBaseModel}
+              onTriggerFineTuneAndCompare={(id) => handleTriggerFineTuneAndCompare(id)}
+              plainExplanations={plainExplanations}
+              onExplainBenchmarksWithLlm={handleExplainBenchmarksWithLlm}
+              onSendFlaggedPromptToDatasetStudio={handleSendFlaggedPromptToDatasetStudio}
+              isExplaining={isExplainingBenchmarks}
+            />
+          </div>
         )}
 
         {activeTab === 'agents' && (

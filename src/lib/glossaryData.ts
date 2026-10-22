@@ -341,6 +341,67 @@ export const ML_GLOSSARY: Record<string, GlossaryTermEntry> = {
       'Exposes brittle failure modes that aggregate benchmarks miss, and lets you convert any failed edge case into a corrective training sample in one click.',
     idealDirection: 'Resilience Score >= 90% · 0 Repetition Loops',
   },
+  vlmIsolatedPipeline: {
+    key: 'vlmIsolatedPipeline',
+    term: 'Isolated Vision-Language (VLM) Pipeline Track',
+    category: 'ARCHITECTURE',
+    whatItIs:
+      'A dedicated multimodal training pipeline (for Qwen3.5-VL-0.8B/2B and LFM2.5-VL-450M/1.6B) that separates visual patch + projector gradients from pure text LLM fine-tuning.',
+    whatItTellsUs:
+      'Jointly training sub-2B models on image patches and dense text simultaneously causes modality interference (-3% to -6% on GSM8K/HumanEval). Isolating the VLM pipeline guarantees zero degradation to your text-generation checkpoints.',
+    idealDirection: 'Keep Text LLM & Vision VLM tracks isolated',
+  },
+  visionTowerFreeze: {
+    key: 'visionTowerFreeze',
+    term: 'Vision Tower Freeze (SigLIP / NaViT) & MLP Projector Tuning',
+    category: 'HYPERPARAMETER',
+    whatItIs:
+      'Controls whether the pretrained vision encoder (SigLIP-400M or Qwen-NaViT) is frozen while training the 2-layer MLP multimodal connector and LoRA/DoRA adapters on the language backbone.',
+    whatItTellsUs:
+      'Unfreezing the vision tower on small datasets destroys pretrained visual representations and spikes VRAM by 2.4x. Freezing the vision tower while tuning the MLP projector + LLM LoRA achieves optimal OCR and grounding accuracy.',
+    idealDirection: 'Freeze Vision Tower ON · Unfreeze MLP Projector ON',
+  },
+  navitDynamicResolution: {
+    key: 'navitDynamicResolution',
+    term: 'Dynamic Resolution Patch Budgeting (min_pixels / max_pixels)',
+    category: 'HYPERPARAMETER',
+    whatItIs:
+      'Dynamically tiles or scales input images into 14x14 or 28x28 visual patches within a configurable pixel budget (e.g., 256x28x28 to 1280x28x28) instead of distorting aspect ratios into a fixed 224x224 square.',
+    whatItTellsUs:
+      'Determines how many visual tokens (<|image_pad|>) each image consumes in the context window. Higher max_pixels boosts dense OCR and UI grounding but increases sequence length and VRAM.',
+    idealDirection: '512–1024 max patch tokens for OCR/UI; 256–512 for edge VQA',
+  },
+  mmprojExport: {
+    key: 'mmprojExport',
+    term: 'Dual-Artifact VLM Export (Model GGUF + mmproj-f16.gguf)',
+    category: 'FORMAT',
+    whatItIs:
+      'Exports the quantized language backbone (e.g., Q4_K_M GGUF) alongside a separate FP16 multimodal vision projector file (mmproj-model-f16.gguf) or unified VLM Safetensors.',
+    whatItTellsUs:
+      'Vision encoders and MLP connectors are highly sensitive to 4-bit quantization. Keeping mmproj in FP16 while quantizing the LLM backbone to Q4_K_M preserves 99.4% of visual grounding accuracy on edge devices.',
+    idealDirection: 'LLM Backbone: imatrix Q4_K_M + Vision Projector: FP16',
+  },
+  visualIfdPruning: {
+    key: 'visualIfdPruning',
+    term: 'Visual IFD (Cross-Modal Alignment) & pHash Decontamination',
+    category: 'METRIC',
+    whatItIs:
+      'Compares model perplexity on the answer WITH the image versus WITHOUT the image (blind baseline), paired with Perceptual Image Hashing (pHash) against MMMU, DocVQA, and MathVista.',
+    whatItTellsUs:
+      'If a VLM predicts the exact same answer without looking at the image, the sample teaches language priors (hallucination) rather than visual grounding. Pruning low-alignment pairs forces true visual attention.',
+    idealDirection: 'Cross-Modal Alignment Score >= 0.72 · 0 pHash leaks',
+  },
+  bboxGrounding: {
+    key: 'bboxGrounding',
+    term: 'Normalized [0, 1000] Bounding-Box & Spatial Grounding Tags',
+    category: 'FORMAT',
+    whatItIs:
+      'Encodes object and UI element coordinates as resolution-independent integers [x1, y1, x2, y2] scaled from 0 to 1000 inside <ref>label</ref><box>[x1,y1,x2,y2]</box> tokens.',
+    whatItTellsUs:
+      'Allows Qwen3.5-VL and LFM2.5-VL to click UI buttons, extract receipt line-items, and localize defects across arbitrary aspect ratios without coordinate drift.',
+    idealDirection: '100% valid [0, 1000] normalized coordinates',
+  },
 };
+
 
 
