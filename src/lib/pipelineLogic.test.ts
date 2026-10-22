@@ -40,6 +40,13 @@ import {
   filterCommandPaletteActions,
   buildTextPythonEngineManifest,
   buildVisionPythonEngineManifest,
+  computeSpinAndBestOfNAlignmentPlan,
+  computeWhiteBoxLogitDistillationPlan,
+  computeLoftQAndQatEdgeHardeningPlan,
+  computeContinualReplayAndLisaPlan,
+  buildWebGpuAndTransformersJsExportBundle,
+  runPipelineDoctorAudit,
+  parseEngineMetricLine,
 } from './pipelineLogic.ts';
 import { CURATED_DATASET_BLENDS } from '../data/curatedDatasetBlends.ts';
 import { ML_GLOSSARY } from './glossaryData.ts';
@@ -997,6 +1004,10 @@ import {
   parseCustomVisionDatasetUpload,
   pruneVisionDatasetByAlignmentAndPhash,
   validateVisionDatasetCorpus,
+  VEIL_SANDBOX_TEST_SCENES,
+  computeBox2dIoU,
+  computeVisionGrpoIoURewardPlan,
+  evaluateVeilVisualSandboxScene,
 } from './visionPipelineLogic.ts';
 
 test('INITIAL_VISION_MODELS and CURATED_VISION_BLENDS include 5 multimodal models and 25 HuggingFace dataset blends including VEIL Privacy Hazard Auditing', () => {
@@ -1199,5 +1210,156 @@ test('buildTextPythonEngineManifest and buildVisionPythonEngineManifest generate
   const parsedVisionManifest = JSON.parse(visionBundle.manifestJson);
   assert.equal(parsedVisionManifest.pipelineTrack, 'VISION_VLM_ISOLATED');
   assert.equal(parsedVisionManifest.hardwareConfig.freezeVisionTower, true);
+});
+
+test('computeSpinAndBestOfNAlignmentPlan, computeWhiteBoxLogitDistillationPlan, computeLoftQAndQatEdgeHardeningPlan, computeContinualReplayAndLisaPlan, buildWebGpuAndTransformersJsExportBundle, runPipelineDoctorAudit, and parseEngineMetricLine work accurately', () => {
+  const spinPlan = computeSpinAndBestOfNAlignmentPlan({
+    modelId: 'Qwen/Qwen3.5-0.8B-Instruct',
+    paramsBillions: 0.8,
+    config: {
+      enabled: true,
+      candidatesPerPrompt: 8,
+      spinIterations: 2,
+      samplingTemperature: 0.7,
+      judgeMarginThreshold: 0.25,
+    },
+  });
+  assert.equal(spinPlan.totalGeneratedRolloutsPer1k, 16000);
+  assert.ok(spinPlan.hallucinationLoopReductionPct > 50);
+  assert.equal(spinPlan.iterationTrajectory.length, 2);
+  assert.ok(spinPlan.spinPythonSnippet.includes('SamplingParams'));
+
+  const kdPlan = computeWhiteBoxLogitDistillationPlan({
+    studentModelId: 'LiquidAI/LFM2.5-350M-Instruct',
+    studentParamsBillions: 0.35,
+    config: {
+      enabled: true,
+      teacherModelId: 'Qwen/Qwen3.5-9B-Instruct',
+      divergenceType: 'REVERSE_KL',
+      temperature: 2.0,
+      alphaKdWeight: 0.5,
+      topKLogitsCached: 64,
+    },
+  });
+  assert.ok(kdPlan.logitCacheSizeMbPer10kSamples > 1000);
+  assert.ok(kdPlan.darkKnowledgeTransferEfficiencyPct >= 85);
+  assert.ok(kdPlan.projectedGsm8kGainPct > 3.0);
+  assert.ok(kdPlan.kdTrainerPythonSnippet.includes('Reverse-KL'));
+
+  const loftqPlan = computeLoftQAndQatEdgeHardeningPlan({
+    modelId: 'Qwen/Qwen3.5-0.8B-Instruct',
+    baseFp16Perplexity: 5.12,
+    loraRank: 32,
+    config: {
+      enableLoftQInit: true,
+      loftqIterSteps: 4,
+      enableFakeQuantQat: true,
+      qatTailStepsPct: 15,
+      targetEdgeBitwidth: 'GGUF_Q3_K_M',
+    },
+  });
+  assert.ok(loftqPlan.loftqQatRecoveredPerplexity < loftqPlan.ptqBaselinePerplexity);
+  assert.ok(loftqPlan.svdResidualErrorReductionPct > 60);
+  assert.ok(loftqPlan.loftqPythonSnippet.includes('LoftQConfig'));
+
+  const lisaPlan = computeContinualReplayAndLisaPlan({
+    totalLayers: 24,
+    config: {
+      replayBufferRatioPct: 10,
+      replayAnchorSource: 'HuggingFaceH4/ultrachat_200k',
+      enableLisaLayerSampling: true,
+      lisaActiveMiddleLayers: 4,
+    },
+  });
+  assert.equal(lisaPlan.catastrophicForgettingRisk, 'MINIMAL');
+  assert.ok(lisaPlan.generalCapabilityRetentionPct >= 95);
+  assert.ok(lisaPlan.lisaOptimizerVramSavingsPct > 35);
+
+  const webgpuBundle = buildWebGpuAndTransformersJsExportBundle({
+    modelId: 'LiquidAI/LFM2.5-350M-Instruct',
+    modelName: 'LFM2.5-350M-Instruct',
+    paramsBillions: 0.35,
+    contextWindow: 8192,
+    dtype: 'q4f16',
+  });
+  assert.ok(webgpuBundle.estimatedBrowserVramMb < 1000);
+  assert.ok(webgpuBundle.estimatedWebGpuTokPerSec > 80);
+  assert.ok(webgpuBundle.transformersJsSnippet.includes('device: "webgpu"'));
+
+  const doctorReport = runPipelineDoctorAudit({
+    modelName: 'Qwen3.5-2B-Instruct',
+    paramsBillions: 2.0,
+    hpoConfig: {
+      learningRate: 0.0002,
+      loraRank: 32,
+      loraAlpha: 64,
+      loraDropout: 0.05,
+      warmupRatio: 0.05,
+      weightDecay: 0.01,
+      neftuneAlpha: 5,
+      batchSize: 8,
+      lrScheduler: 'wsd',
+    },
+    samplePackingEnabled: true,
+    completionOnlyLossEnabled: true,
+    stage2Enabled: true,
+    alignmentMethod: 'ORPO',
+    grpoEnabled: true,
+    vramUsedGb: 11.4,
+    vramTotalGb: 24,
+    datasetHealthScore: 98,
+    freezeVisionTower: true,
+    excessiveNavitSampleCount: 0,
+  });
+  assert.equal(doctorReport.checks.length, 12);
+  assert.equal(doctorReport.overallScore, 100);
+  assert.equal(doctorReport.readinessVerdict, 'PRODUCTION_READY');
+
+  const parsedMetric = parseEngineMetricLine(
+    '[FORGEML_METRIC] {"step": 120, "epoch": 1.2, "trainLoss": 0.78, "valLoss": 0.84, "gradNorm": 0.89, "learningRate": 0.00018, "tokensPerSec": 14200}'
+  );
+  assert.ok(parsedMetric !== null);
+  assert.equal(parsedMetric?.step, 120);
+  assert.equal(parsedMetric?.trainLoss, 0.78);
+});
+
+test('computeBox2dIoU, computeVisionGrpoIoURewardPlan, and evaluateVeilVisualSandboxScene verify spatial grounding and VEIL redaction scenes', () => {
+  const iouExact = computeBox2dIoU([200, 100, 600, 500], [200, 100, 600, 500]);
+  assert.equal(iouExact, 1.0);
+  const iouDrifted = computeBox2dIoU([220, 140, 560, 540], [180, 95, 620, 610]);
+  assert.ok(iouDrifted > 0.5 && iouDrifted < 0.85);
+
+  const visionGrpo = computeVisionGrpoIoURewardPlan({
+    modelId: 'LiquidAI/LFM2.5-VL-450M-Instruct',
+    totalParamsBillions: 0.45,
+    config: {
+      enabled: true,
+      groupRolloutSize: 8,
+      klBeta: 0.04,
+      giouRewardWeight: 1.5,
+      falsePositivePenaltyWeight: 1.0,
+      activeVerifiers: [
+        'giou_box_coordinate',
+        'veil_false_positive_penalty',
+        'ocr_exact_match',
+        'json_schema_strict',
+      ],
+    },
+  });
+  assert.equal(visionGrpo.criticVramOverheadGb, 0);
+  assert.ok(visionGrpo.projectedGroundingIoUGainPct > 8.0);
+  assert.ok(visionGrpo.veilFalseAlarmReductionPct > 65.0);
+
+  assert.equal(VEIL_SANDBOX_TEST_SCENES.length, 5);
+  const scene1Eval = evaluateVeilVisualSandboxScene(VEIL_SANDBOX_TEST_SCENES[0]);
+  assert.ok(scene1Eval.fineTunedMeanIoU > scene1Eval.baseMeanIoU);
+  assert.equal(scene1Eval.recommendedRedactionMode, 'BLUR');
+
+  const scene4Eval = evaluateVeilVisualSandboxScene(VEIL_SANDBOX_TEST_SCENES[3]);
+  assert.equal(scene4Eval.recommendedRedactionMode, 'MOSAIC');
+
+  const scene5Eval = evaluateVeilVisualSandboxScene(VEIL_SANDBOX_TEST_SCENES[4]);
+  assert.equal(scene5Eval.falsePositiveEliminated, true);
+  assert.equal(scene5Eval.recommendedRedactionMode, 'SAFE_PASS');
 });
 

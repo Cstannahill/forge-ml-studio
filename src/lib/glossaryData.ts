@@ -401,7 +401,64 @@ export const ML_GLOSSARY: Record<string, GlossaryTermEntry> = {
       'Allows Qwen3.5-VL and LFM2.5-VL to click UI buttons, extract receipt line-items, and localize defects across arbitrary aspect ratios without coordinate drift.',
     idealDirection: '100% valid [0, 1000] normalized coordinates',
   },
+  spinBestOfN: {
+    key: 'spinBestOfN',
+    term: 'Self-Play Iterative Alignment (SPIN) & Best-of-N Rejection Sampling',
+    category: 'HYPERPARAMETER',
+    whatItIs:
+      'Generates N candidate completions from the active Stage 1 checkpoint per prompt, scores them via deterministic verifiers or teacher rubric, and aligns the model on its own highest- vs. lowest-scoring outputs.',
+    whatItTellsUs:
+      'On-policy preference pairs eliminate distribution shift and reduce sub-2B repetition/hallucination loops by up to 68% compared to off-policy preference datasets.',
+    idealDirection: 'N=8 rollouts · 2 SPIN iterations · Margin >= 0.25',
+  },
+  whiteBoxLogitKd: {
+    key: 'whiteBoxLogitKd',
+    term: 'White-Box Logit-Level Knowledge Distillation (Reverse-KL / JSD)',
+    category: 'HYPERPARAMETER',
+    whatItIs:
+      'Distills Top-K token probability distributions (logits) from a larger teacher (e.g., Qwen3.5-9B/27B or LFM2.5-1.6B) directly into the sub-2B student using mode-seeking Reverse-KL divergence.',
+    whatItTellsUs:
+      'Reverse-KL prevents small models from hedging probability mass across broad tails, transferring 2x–3x more reasoning capability per token than text-only distillation.',
+    idealDirection: 'Reverse-KL · Top-64 cached logits · Temp=2.0 · Alpha=0.5',
+  },
+  loftqQat: {
+    key: 'loftqQat',
+    term: 'LoftQ SVD Initialization & Quantization-Aware Training (QAT)',
+    category: 'FORMAT',
+    whatItIs:
+      'Initializes LoRA A and B matrices via alternating SVD to absorb 4-bit/3-bit NF4 quantization error before training, paired with a fake-quantization QAT tail pass.',
+    whatItTellsUs:
+      'Recovers up to 85% of perplexity degradation when deploying sub-1B models in ultra-compact Q3_K_M, IQ3_XXS, Q2_K, or WebGPU q4f16 formats.',
+    idealDirection: 'LoftQ 4-iter SVD init + 15% QAT tail steps',
+  },
+  continualReplayLisa: {
+    key: 'continualReplayLisa',
+    term: 'Anti-Forgetting Replay Buffer & LISA Layerwise Importance Sampling',
+    category: 'HYPERPARAMETER',
+    whatItIs:
+      'Mixes a 5–10% general instruction anchor buffer with LISA (freezing middle transformer layers and randomly sampling k active layers per step while keeping embedding and head active).',
+    whatItTellsUs:
+      'Prevents catastrophic forgetting of general chat and reasoning skills when specializing a sub-2B model on narrow JSON or domain corpora, while cutting optimizer VRAM by ~40%.',
+    idealDirection: '8–10% Replay Buffer + LISA k=4 active middle layers',
+  },
+  webGpuExport: {
+    key: 'webGpuExport',
+    term: 'Browser-Native WebGPU / ONNX & Transformers.js v3 Export',
+    category: 'FORMAT',
+    whatItIs:
+      'Exports the merged checkpoint to 4-bit quantized ONNX (q4f16) and MLC WebLLM shards for zero-server execution directly inside Chromium/Safari browsers via WebGPU.',
+    whatItTellsUs:
+      'Enables sub-2B models (LFM2.5-350M, LFM2.5-VL-450M, Qwen3.5-0.8B) to run locally in a user browser tab at 45–110 tok/s with zero cloud inference cost.',
+    idealDirection: 'dtype=q4f16 · Browser VRAM < 1.8 GB',
+  },
+  visionGrpoGiou: {
+    key: 'visionGrpoGiou',
+    term: 'Vision-GRPO Spatial Box GIoU & Hallucination Penalty Verifier',
+    category: 'METRIC',
+    whatItIs:
+      'Applies Stage 3 Group Relative Policy Optimization to Vision-Language Models using exact 2D Generalized Intersection-over-Union (GIoU) rewards on predicted [ymin, xmin, ymax, xmax] boxes and false-positive penalties on clean SAFE_PASS images.',
+    whatItTellsUs:
+      'Sharpens spatial bounding-box localization by +6% to +11% IoU and eliminates false-positive PII hallucinations on clean studio backgrounds.',
+    idealDirection: '8 rollouts · GIoU weight=1.5 · False-Positive penalty=1.0',
+  },
 };
-
-
-

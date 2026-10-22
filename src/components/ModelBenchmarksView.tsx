@@ -22,6 +22,7 @@ import {
   ResponsiveContainer,
   Tooltip,
 } from 'recharts';
+import { VeilVisionRedactionCanvas } from './VeilVisionRedactionCanvas';
 import {
   ArchitectureFamily,
   PlainLanguageComparison,
@@ -1211,6 +1212,9 @@ export const ModelBenchmarksView: React.FC<ModelBenchmarksViewProps> = ({
           ))}
         </div>
       </section>
+
+      {/* Section 07: Interactive Vision Grounding & VEIL Privacy Auto-Redaction Canvas */}
+      <VeilVisionRedactionCanvas />
     </div>
   );
 };

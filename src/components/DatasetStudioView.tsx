@@ -38,6 +38,7 @@ import {
   ModelSizeTier,
 } from '../data/curatedDatasetBlends';
 import { InfoTooltip } from './InfoTooltip';
+import { HuggingFaceLivePreviewPanel } from './HuggingFaceLivePreviewPanel';
 
 export interface HfDatasetCatalogItem {
   id: string;
@@ -1646,6 +1647,17 @@ export const DatasetStudioView: React.FC<DatasetStudioViewProps> = ({
           </div>
         </div>
       </section>
+
+      {/* Live HuggingFace Hub Dataset Inspector & Column Mapper */}
+      <HuggingFaceLivePreviewPanel
+        targetFormat={targetFormat}
+        onIngestPreviewRows={(datasetId, newRows) => {
+          onAppendSamples?.(
+            newRows,
+            `Ingested ${newRows.length} live-mapped rows from HuggingFace Hub (${datasetId}).`
+          );
+        }}
+      />
     </div>
   );
 };

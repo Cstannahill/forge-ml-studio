@@ -68,6 +68,7 @@ import {
   TrainingMetricPoint,
 } from '../data/initialPipelineData';
 import { InfoTooltip } from './InfoTooltip';
+import { NextGenQualityAndWebGpuPanel } from './NextGenQualityAndWebGpuPanel';
 import { PythonEngineRunnerCard } from './PythonEngineRunnerCard';
 
 interface CommandCenterViewProps {
@@ -110,6 +111,7 @@ interface CommandCenterViewProps {
     model: RegisteredModel,
     modelCard?: StandardizedModelCardResult
   ) => void;
+  onStreamEngineMetricPoint?: (pt: TrainingMetricPoint) => void;
 }
 
 export const CommandCenterView: React.FC<CommandCenterViewProps> = ({
@@ -140,6 +142,7 @@ export const CommandCenterView: React.FC<CommandCenterViewProps> = ({
   onSimulateGpuStressSpike,
   onMitigateGpuOverload,
   onRecordSafetensorsExport,
+  onStreamEngineMetricPoint,
 }) => {
   const gpuAlertEval = evaluateGpuThresholds(gpuStats, gpuThresholds);
   const [logLevelFilter, setLogLevelFilter] = useState<'ALL' | 'INFO' | 'METRIC' | 'WARN' | 'ERROR'>('ALL');
@@ -3437,8 +3440,28 @@ export const CommandCenterView: React.FC<CommandCenterViewProps> = ({
         </div>
       </section>
 
-      {/* Real Python Engine Runner (Unsloth + Transformers + TRL + PEFT) */}
-      <PythonEngineRunnerCard bundle={textEngineBundle} />
+      {/* Next-Gen Sub-2B Quality Accelerators (SPIN, White-Box Logit KD, LoftQ/QAT, Replay/LISA, WebGPU) */}
+      <NextGenQualityAndWebGpuPanel
+        modelId={selectedModel.id}
+        modelName={selectedModel.name}
+        paramsBillions={selectedModel.paramsBillions}
+        contextWindow={selectedModel.contextWindow}
+        loraRank={activeHpoConfig.loraRank}
+        basePerplexity={
+          selectedModel.fineTunedBenchmarks?.perplexity ?? selectedModel.baseBenchmarks.perplexity
+        }
+        onApplyNextGenQualityBoost={(_label, mmluGain, gsm8kGain, ifEvalGain) => {
+          onApplyStage3GrpoBoost?.(mmluGain, gsm8kGain, ifEvalGain);
+        }}
+      />
+
+      {/* Real Python Engine Runner (Unsloth + Transformers + TRL + PEFT + SSE Metric Stream) */}
+      <PythonEngineRunnerCard
+        bundle={textEngineBundle}
+        onStreamMetricPoint={(m) => {
+          onStreamEngineMetricPoint?.(m);
+        }}
+      />
     </div>
   );
 };

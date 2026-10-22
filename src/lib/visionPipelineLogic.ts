@@ -2810,3 +2810,336 @@ function buildVisionSampleFromRawItem(
     formattedPayload: formatVisionSamplePayload(baseSample, targetFormat),
   };
 }
+
+// ============================================================================
+// VISION-GRPO SPATIAL BOX GIoU & HALLUCINATION REWARD STUDIO (STAGE 3 VLM RLVR)
+// ============================================================================
+
+export type VisionGrpoVerifierId =
+  | 'giou_box_coordinate'
+  | 'veil_false_positive_penalty'
+  | 'ocr_exact_match'
+  | 'json_schema_strict';
+
+export interface VisionGrpoRewardConfig {
+  enabled: boolean;
+  groupRolloutSize: 4 | 8 | 16;
+  klBeta: number;
+  giouRewardWeight: number;
+  falsePositivePenaltyWeight: number;
+  activeVerifiers: VisionGrpoVerifierId[];
+}
+
+export interface VisionGrpoRewardPlan {
+  enabled: boolean;
+  criticVramOverheadGb: number;
+  projectedGroundingIoUGainPct: number;
+  projectedDocVqaGainPct: number;
+  veilFalseAlarmReductionPct: number;
+  visionGrpoPythonScript: string;
+}
+
+/**
+ * Computes exact 2D Intersection-over-Union (IoU) for normalized [0, 1000] [ymin, xmin, ymax, xmax] boxes.
+ */
+export function computeBox2dIoU(
+  boxA: [number, number, number, number],
+  boxB: [number, number, number, number]
+): number {
+  const [y1A, x1A, y2A, x2A] = boxA;
+  const [y1B, x1B, y2B, x2B] = boxB;
+
+  const interY1 = Math.max(y1A, y1B);
+  const interX1 = Math.max(x1A, x1B);
+  const interY2 = Math.min(y2A, y2B);
+  const interX2 = Math.min(x2A, x2B);
+
+  const interH = Math.max(0, interY2 - interY1);
+  const interW = Math.max(0, interX2 - interX1);
+  const interArea = interH * interW;
+
+  const areaA = Math.max(1, (y2A - y1A) * (x2A - x1A));
+  const areaB = Math.max(1, (y2B - y1B) * (x2B - x1B));
+  const unionArea = areaA + areaB - interArea;
+
+  return Number((interArea / Math.max(1, unionArea)).toFixed(3));
+}
+
+export function computeVisionGrpoIoURewardPlan(input: {
+  modelId: string;
+  totalParamsBillions: number;
+  config: VisionGrpoRewardConfig;
+}): VisionGrpoRewardPlan {
+  const { modelId, totalParamsBillions, config } = input;
+  const n = config.groupRolloutSize;
+  const verifierCount = config.activeVerifiers.length;
+  const scaleFactor = totalParamsBillions <= 1.0 ? 1.24 : 1.1;
+
+  const projectedGroundingIoUGainPct = config.enabled
+    ? Number(
+        (
+          (3.2 + Math.log2(n) * 1.1 + config.giouRewardWeight * 2.1 + verifierCount * 0.45) *
+          scaleFactor
+        ).toFixed(1)
+      )
+    : 0;
+  const projectedDocVqaGainPct = config.enabled
+    ? Number(((1.8 + Math.log2(n) * 0.65 + verifierCount * 0.35) * scaleFactor).toFixed(1))
+    : 0;
+  const veilFalseAlarmReductionPct = config.enabled
+    ? Number(
+        Math.min(
+          84.0,
+          (36.0 + config.falsePositivePenaltyWeight * 24.0 + Math.log2(n) * 6.0) * scaleFactor
+        ).toFixed(1)
+      )
+    : 0;
+
+  const visionGrpoPythonScript = `# Stage 3 Vision-GRPO Spatial Box GIoU & VEIL Hallucination Reward Verifier (${modelId})
+import json, re
+from trl import GRPOConfig, GRPOTrainer
+
+def compute_giou_box2d_reward(completions, ground_truth_boxes, **kwargs):
+    """Rewards exact [ymin, xmin, ymax, xmax] spatial localization and penalizes hallucinated boxes on SAFE_PASS scenes."""
+    rewards = []
+    for comp, gt_list in zip(completions, ground_truth_boxes):
+        try:
+            payload = json.loads(comp)
+            preds = payload.get("detections", [])
+            if len(gt_list) == 0:
+                # Clean Baseline (Category 5 SAFE_PASS): reward 1.0 if zero false positives, else penalize
+                rewards.append(1.0 if len(preds) == 0 else -${config.falsePositivePenaltyWeight})
+                continue
+            if len(preds) == 0:
+                rewards.append(-0.5)
+                continue
+            pred_box = preds[0].get("box_2d", [0, 0, 0, 0])
+            gt_box = gt_list[0]
+            inter_y1, inter_x1 = max(pred_box[0], gt_box[0]), max(pred_box[1], gt_box[1])
+            inter_y2, inter_x2 = min(pred_box[2], gt_box[2]), min(pred_box[3], gt_box[3])
+            inter = max(0, inter_y2 - inter_y1) * max(0, inter_x2 - inter_x1)
+            union = ((pred_box[2]-pred_box[0])*(pred_box[3]-pred_box[1])) + ((gt_box[2]-gt_box[0])*(gt_box[3]-gt_box[1])) - inter
+            iou = inter / max(1.0, union)
+            rewards.append(float(iou * ${config.giouRewardWeight}))
+        except Exception:
+            rewards.append(-1.0)
+    return rewards`;
+
+  return {
+    enabled: config.enabled,
+    criticVramOverheadGb: 0,
+    projectedGroundingIoUGainPct,
+    projectedDocVqaGainPct,
+    veilFalseAlarmReductionPct,
+    visionGrpoPythonScript,
+  };
+}
+
+// ============================================================================
+// INTERACTIVE VEIL BOUNDING-BOX & AUTO-REDACTION SANDBOX CANVAS ("VISION VIBE CHECK")
+// ============================================================================
+
+export interface VeilSandboxDetectionRegion {
+  id: string;
+  label: string;
+  riskSeverity: 'CRITICAL' | 'HIGH' | 'MEDIUM' | 'NONE';
+  suggestedAction: 'BLUR' | 'MOSAIC' | 'SAFE_PASS';
+  groundTruthBox2d: [number, number, number, number]; // [ymin, xmin, ymax, xmax] in [0, 1000]
+  baseModelBox2d: [number, number, number, number] | null; // Base model often drifts or hallucinates
+  fineTunedBox2d: [number, number, number, number];
+  extractedOcrSnippet: string;
+}
+
+export interface VeilSandboxScene {
+  id: string;
+  title: string;
+  veilCategoryIndex: 1 | 2 | 3 | 4 | 5;
+  veilCategoryName: string;
+  sceneSummary: string;
+  defaultAction: 'BLUR' | 'MOSAIC' | 'SAFE_PASS';
+  backgroundTheme: 'DESK_MAIL' | 'NIGHTSTAND_RX' | 'STUDIO_MIRROR' | 'BIOMETRIC_INK' | 'CLEAN_STUDIO';
+  detections: VeilSandboxDetectionRegion[];
+  baseHallucinatedBox?: {
+    label: string;
+    box2d: [number, number, number, number];
+    reason: string;
+  };
+}
+
+export const VEIL_SANDBOX_TEST_SCENES: VeilSandboxScene[] = [
+  {
+    id: 'veil-scene-1-residential',
+    title: 'Scene 1: Home Studio Desk — IRS Tax Envelope & Apt 1408 Key Fob',
+    veilCategoryIndex: 1,
+    veilCategoryName: '1. Residential & Geolocation Doxxing',
+    sceneSummary:
+      'Creator desk frame containing a First-Class IRS return envelope with street address and a brass apartment key tag.',
+    defaultAction: 'BLUR',
+    backgroundTheme: 'DESK_MAIL',
+    detections: [
+      {
+        id: 'det-env-1',
+        label: 'first_class_mail_address',
+        riskSeverity: 'CRITICAL',
+        suggestedAction: 'BLUR',
+        groundTruthBox2d: [220, 140, 560, 540],
+        baseModelBox2d: [180, 95, 620, 610],
+        fineTunedBox2d: [224, 144, 556, 536],
+        extractedOcrSnippet: 'IRS Austin TX · 742 Evergreen Terrace Apt 4B',
+      },
+      {
+        id: 'det-fob-2',
+        label: 'property_key_fob_tag',
+        riskSeverity: 'HIGH',
+        suggestedAction: 'BLUR',
+        groundTruthBox2d: [610, 620, 810, 860],
+        baseModelBox2d: [550, 560, 880, 910],
+        fineTunedBox2d: [615, 624, 806, 855],
+        extractedOcrSnippet: 'THE AVALON · UNIT 1408 MASTER KEY',
+      },
+    ],
+  },
+  {
+    id: 'veil-scene-2-medical-financial',
+    title: 'Scene 2: Hotel Nightstand — Amber Rx Pill Vial & Airline Boarding Pass',
+    veilCategoryIndex: 2,
+    veilCategoryName: '2. Medical, Travel & Financial PII',
+    sceneSummary:
+      'Vanity surface showing an amber prescription vial with patient legal name/Rx# next to a printed boarding stub with 6-character PNR.',
+    defaultAction: 'BLUR',
+    backgroundTheme: 'NIGHTSTAND_RX',
+    detections: [
+      {
+        id: 'det-rx-1',
+        label: 'prescription_bottle_label',
+        riskSeverity: 'CRITICAL',
+        suggestedAction: 'BLUR',
+        groundTruthBox2d: [190, 160, 740, 440],
+        baseModelBox2d: [140, 110, 810, 520],
+        fineTunedBox2d: [194, 164, 735, 436],
+        extractedOcrSnippet: 'CVS PHARMACY · RX# 8849201 · E. VANCE · SERTRALINE 50MG',
+      },
+      {
+        id: 'det-bp-2',
+        label: 'boarding_pass_pnr_barcode',
+        riskSeverity: 'CRITICAL',
+        suggestedAction: 'BLUR',
+        groundTruthBox2d: [310, 510, 690, 890],
+        baseModelBox2d: [260, 460, 760, 940],
+        fineTunedBox2d: [314, 515, 686, 884],
+        extractedOcrSnippet: 'DELTA DL0418 · LAX -> JFK · PNR: K9X4QM',
+      },
+    ],
+  },
+  {
+    id: 'veil-scene-3-specular-crew',
+    title: 'Scene 3: Dressing Room Mirror — Off-Camera Boom Op & Call Sheet Whiteboard',
+    veilCategoryIndex: 3,
+    veilCategoryName: '3. Specular Crew & Gear Leaks',
+    sceneSummary:
+      'Vanity mirror reflecting an unconsenting camera operator and a production schedule whiteboard listing legal names and call times.',
+    defaultAction: 'BLUR',
+    backgroundTheme: 'STUDIO_MIRROR',
+    detections: [
+      {
+        id: 'det-mirror-crew',
+        label: 'mirror_reflected_crew_operator',
+        riskSeverity: 'CRITICAL',
+        suggestedAction: 'BLUR',
+        groundTruthBox2d: [150, 120, 790, 470],
+        baseModelBox2d: [100, 80, 860, 550],
+        fineTunedBox2d: [155, 125, 785, 465],
+        extractedOcrSnippet: 'Reflected Cinema Rig + Operator Face in Vanity Glass',
+      },
+      {
+        id: 'det-whiteboard-nda',
+        label: 'confidential_set_whiteboard',
+        riskSeverity: 'HIGH',
+        suggestedAction: 'BLUR',
+        groundTruthBox2d: [210, 540, 580, 900],
+        baseModelBox2d: [165, 490, 650, 950],
+        fineTunedBox2d: [214, 544, 576, 895],
+        extractedOcrSnippet: 'PROJECT VELVET · CALL 08:00 · DIR: M. CHEN (NDA)',
+      },
+    ],
+  },
+  {
+    id: 'veil-scene-4-biometric-ink',
+    title: 'Scene 4: Forearm Subject Closeup — Custom Script Tattoo & Surgical Scar',
+    veilCategoryIndex: 4,
+    veilCategoryName: '4. Identifying Biometric Ink & Scars',
+    sceneSummary:
+      'High-resolution subject frame where a unique surname script tattoo on the inner forearm requires MOSAIC pixelation instead of Gaussian blur.',
+    defaultAction: 'MOSAIC',
+    backgroundTheme: 'BIOMETRIC_INK',
+    detections: [
+      {
+        id: 'det-tattoo-1',
+        label: 'identifying_forearm_script_tattoo',
+        riskSeverity: 'CRITICAL',
+        suggestedAction: 'MOSAIC',
+        groundTruthBox2d: [280, 240, 680, 760],
+        baseModelBox2d: [210, 175, 760, 835],
+        fineTunedBox2d: [284, 245, 676, 755],
+        extractedOcrSnippet: 'Custom Calligraphic Script Tattoo ("MMXXII · VANCE") -> MOSAIC 16px',
+      },
+    ],
+  },
+  {
+    id: 'veil-scene-5-clean-baseline',
+    title: 'Scene 5: Clean Studio Baseline — Blank Coffee Mug & Acoustic Foam (Hard Negative)',
+    veilCategoryIndex: 5,
+    veilCategoryName: '5. Clean Baseline (SAFE_PASS Control)',
+    sceneSummary:
+      'Sanitized studio set with a blank ceramic mug, unbranded notebook, and acoustic panels. Base model hallucinates a PII hazard on the mug; Fine-Tuned VLM outputs SAFE_PASS.',
+    defaultAction: 'SAFE_PASS',
+    backgroundTheme: 'CLEAN_STUDIO',
+    detections: [],
+    baseHallucinatedBox: {
+      label: 'false_positive_rx_bottle_hallucination',
+      box2d: [380, 340, 720, 640],
+      reason: 'Base VLM misclassified blank amber ceramic coffee mug as a pharmacy pill bottle.',
+    },
+  },
+];
+
+export function evaluateVeilVisualSandboxScene(scene: VeilSandboxScene): {
+  baseMeanIoU: number;
+  fineTunedMeanIoU: number;
+  iouDelta: number;
+  falsePositiveEliminated: boolean;
+  recommendedRedactionMode: 'BLUR' | 'MOSAIC' | 'SAFE_PASS';
+} {
+  if (scene.detections.length === 0) {
+    return {
+      baseMeanIoU: 0,
+      fineTunedMeanIoU: 1.0,
+      iouDelta: 1.0,
+      falsePositiveEliminated: Boolean(scene.baseHallucinatedBox),
+      recommendedRedactionMode: 'SAFE_PASS',
+    };
+  }
+
+  const baseIoUs = scene.detections.map((d) =>
+    d.baseModelBox2d ? computeBox2dIoU(d.groundTruthBox2d, d.baseModelBox2d) : 0
+  );
+  const ftIoUs = scene.detections.map((d) =>
+    computeBox2dIoU(d.groundTruthBox2d, d.fineTunedBox2d)
+  );
+
+  const baseMeanIoU = Number(
+    (baseIoUs.reduce((a, b) => a + b, 0) / baseIoUs.length).toFixed(3)
+  );
+  const fineTunedMeanIoU = Number(
+    (ftIoUs.reduce((a, b) => a + b, 0) / ftIoUs.length).toFixed(3)
+  );
+
+  return {
+    baseMeanIoU,
+    fineTunedMeanIoU,
+    iouDelta: Number((fineTunedMeanIoU - baseMeanIoU).toFixed(3)),
+    falsePositiveEliminated: false,
+    recommendedRedactionMode: scene.defaultAction,
+  };
+}
+

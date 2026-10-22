@@ -12,7 +12,9 @@ import {
 } from 'lucide-react';
 import {
   RegisteredVisionModel,
+  VisionGrpoRewardConfig,
   VisionPipelineHardwareConfig,
+  computeVisionGrpoIoURewardPlan,
   computeVisionPipelineHardwarePlan,
 } from '../lib/visionPipelineLogic';
 import { buildVisionPythonEngineManifest } from '../lib/pipelineLogic';
@@ -57,10 +59,33 @@ export const VisionCommandCenterPanel: React.FC<VisionCommandCenterPanelProps> =
   const [batchSize, setBatchSize] = useState<number>(8);
   const [copiedScript, setCopiedScript] = useState<boolean>(false);
   const [exportedBanner, setExportedBanner] = useState<string | null>(null);
+  const [vlmGrpoConfig, setVlmGrpoConfig] = useState<VisionGrpoRewardConfig>({
+    enabled: true,
+    groupRolloutSize: 8,
+    klBeta: 0.04,
+    giouRewardWeight: 1.5,
+    falsePositivePenaltyWeight: 1.0,
+    activeVerifiers: [
+      'giou_box_coordinate',
+      'veil_false_positive_penalty',
+      'ocr_exact_match',
+      'json_schema_strict',
+    ],
+  });
 
   const vlmPlan = useMemo(
     () => computeVisionPipelineHardwarePlan(activeVisionModel, hwConfig, loraRank, batchSize),
     [activeVisionModel, hwConfig, loraRank, batchSize]
+  );
+
+  const vlmGrpoPlan = useMemo(
+    () =>
+      computeVisionGrpoIoURewardPlan({
+        modelId: activeVisionModel.id,
+        totalParamsBillions: activeVisionModel.totalParamsBillions,
+        config: vlmGrpoConfig,
+      }),
+    [activeVisionModel, vlmGrpoConfig]
   );
 
   const visionEngineBundle = useMemo(
@@ -392,6 +417,92 @@ export const VisionCommandCenterPanel: React.FC<VisionCommandCenterPanelProps> =
             Export Dual-File VLM Checkpoint ({vlmPlan.backboneExportFilename} +{' '}
             {vlmPlan.mmprojExportFilename})
           </button>
+        </div>
+      </div>
+
+      {/* Stage 3 Vision-GRPO Spatial Box GIoU & Hallucination Reward Studio */}
+      <div className="bg-[#1D2021] border border-[#83A598]/45 rounded-xl p-5 space-y-4">
+        <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 border-b border-[#3C3836] pb-3">
+          <div>
+            <div className="flex items-center gap-2 text-xs font-mono uppercase tracking-wider text-[#8EC07C]">
+              <Sparkles className="w-4 h-4" />
+              Stage 3 Vision-GRPO Spatial Box GIoU &amp; Hallucination Penalty Studio (RLVR-VL)
+              <InfoTooltip glossaryKey="visionGrpoGiou" />
+            </div>
+            <h3 className="text-sm font-semibold text-[#FFE9B1] mt-0.5">
+              Critic-Free `[ymin, xmin, ymax, xmax]` Coordinate IoU Optimization &amp; VEIL `SAFE_PASS` False-Alarm Suppression
+            </h3>
+          </div>
+          <div className="flex items-center gap-3 text-xs font-mono">
+            <span className="px-2.5 py-1 rounded bg-[#252423] border border-[#3C3836] text-[#8EC07C]">
+              Projected BBox IoU Lift: +{vlmGrpoPlan.projectedGroundingIoUGainPct}%
+            </span>
+            <span className="px-2.5 py-1 rounded bg-[#252423] border border-[#3C3836] text-[#B8BB26]">
+              False-Alarm Reduction: -{vlmGrpoPlan.veilFalseAlarmReductionPct}%
+            </span>
+          </div>
+        </div>
+
+        <div className="grid grid-cols-1 lg:grid-cols-12 gap-4 items-center">
+          <div className="lg:col-span-5 grid grid-cols-3 gap-2.5">
+            <div>
+              <label className="block text-[11px] text-[#A89984] mb-1">Rollout Group (G)</label>
+              <select
+                value={vlmGrpoConfig.groupRolloutSize}
+                onChange={(e) =>
+                  setVlmGrpoConfig((p) => ({
+                    ...p,
+                    groupRolloutSize: Number(e.target.value) as 4 | 8 | 16,
+                  }))
+                }
+                className="w-full px-2.5 py-1.5 text-xs bg-[#252423] border border-[#4A453E] rounded-lg text-[#FFE9B1] font-mono"
+              >
+                <option value={4}>G = 4</option>
+                <option value={8}>G = 8 (Optimal)</option>
+                <option value={16}>G = 16</option>
+              </select>
+            </div>
+            <div>
+              <label className="block text-[11px] text-[#A89984] mb-1">GIoU Reward Weight</label>
+              <select
+                value={vlmGrpoConfig.giouRewardWeight}
+                onChange={(e) =>
+                  setVlmGrpoConfig((p) => ({
+                    ...p,
+                    giouRewardWeight: Number(e.target.value),
+                  }))
+                }
+                className="w-full px-2.5 py-1.5 text-xs bg-[#252423] border border-[#4A453E] rounded-lg text-[#FFE9B1] font-mono"
+              >
+                <option value={1.0}>1.0x</option>
+                <option value={1.5}>1.5x (Strict Box)</option>
+                <option value={2.0}>2.0x</option>
+              </select>
+            </div>
+            <div>
+              <label className="block text-[11px] text-[#A89984] mb-1">SAFE_PASS Penalty</label>
+              <select
+                value={vlmGrpoConfig.falsePositivePenaltyWeight}
+                onChange={(e) =>
+                  setVlmGrpoConfig((p) => ({
+                    ...p,
+                    falsePositivePenaltyWeight: Number(e.target.value),
+                  }))
+                }
+                className="w-full px-2.5 py-1.5 text-xs bg-[#252423] border border-[#4A453E] rounded-lg text-[#FFE9B1] font-mono"
+              >
+                <option value={0.5}>-0.5</option>
+                <option value={1.0}>-1.0 (Recommended)</option>
+                <option value={1.5}>-1.5 (Zero False Positives)</option>
+              </select>
+            </div>
+          </div>
+
+          <div className="lg:col-span-7">
+            <pre className="p-2.5 rounded-lg bg-[#141617] border border-[#3C3836] text-[10px] font-mono text-[#D5C4A1] overflow-x-auto max-h-28">
+              {vlmGrpoPlan.visionGrpoPythonScript}
+            </pre>
+          </div>
         </div>
       </div>
 

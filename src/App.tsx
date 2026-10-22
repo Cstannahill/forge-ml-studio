@@ -2,6 +2,7 @@ import React, { useEffect, useState } from 'react';
 import {
   AlertTriangle,
   ShieldAlert,
+  Stethoscope,
   X,
 } from 'lucide-react';
 import {
@@ -13,6 +14,7 @@ import {
   LoggingFramework,
   NormalizedDatasetSample,
   PlainLanguageComparison,
+  PipelineDoctorCheckItem,
   PreferenceAlignmentMethod,
   SELECTED_MODEL_STORAGE_KEY,
   SafetensorsExportPlan,
@@ -26,6 +28,7 @@ import {
   evaluateGpuThresholds,
   formatSampleToTarget,
   normalizeDatasetRecord,
+  runPipelineDoctorAudit,
   serializeTrainingSeriesMap,
   validateDatasetRecords,
 } from './lib/pipelineLogic';
@@ -51,6 +54,7 @@ import {
 } from './components/AgenticOrchestratorView';
 import { CloudAndContainerView } from './components/CloudAndContainerView';
 import { CommandPaletteModal } from './components/CommandPaletteModal';
+import { PipelineDoctorModal } from './components/PipelineDoctorModal';
 import { VisionCommandCenterPanel } from './components/VisionCommandCenterPanel';
 import { VisionDatasetStudioView } from './components/VisionDatasetStudioView';
 import {
@@ -60,6 +64,8 @@ import {
   RegisteredVisionModel,
   VisionTargetFormat,
   buildInitialVisionSamples,
+  capExcessiveNavitPatches,
+  computeVisionTokenizerAndPatchDensity,
   formatVisionSamplePayload,
   validateVisionDatasetCorpus,
 } from './lib/visionPipelineLogic';
@@ -162,6 +168,10 @@ export default function App() {
   });
 
   const [alertBannerDismissed, setAlertBannerDismissed] = useState<boolean>(false);
+  const [isPipelineDoctorOpen, setIsPipelineDoctorOpen] = useState<boolean>(false);
+  const [doctorSamplePacking, setDoctorSamplePacking] = useState<boolean>(true);
+  const [doctorCompletionOnlyLoss, setDoctorCompletionOnlyLoss] = useState<boolean>(true);
+  const [doctorFreezeVisionTower, setDoctorFreezeVisionTower] = useState<boolean>(true);
 
   // LLM Plain-Language Benchmark Explanations State
   const [plainExplanations, setPlainExplanations] = useState<
@@ -1272,6 +1282,82 @@ export default function App() {
     }
   };
 
+  // Live SSE Engine Metric Point Handler
+  const handleStreamEngineMetricPoint = (point: TrainingMetricPoint) => {
+    setTrainingSeriesByModel((prev) => {
+      const current = prev[selectedModelId] ?? INITIAL_TRAINING_SERIES;
+      return {
+        ...prev,
+        [selectedModelId]: [...current, point],
+      };
+    });
+    appendLog(
+      'METRIC',
+      'TRAINER',
+      `[SSE_ENGINE_STREAM] Step ${point.step} (Epoch ${point.epoch}): trainLoss=${point.trainLoss.toFixed(4)} | valLoss=${point.valLoss.toFixed(4)} | gradNorm=${point.gradNorm.toFixed(3)}`,
+      `lr=${point.learningRate.toExponential(2)} | tok/s=${point.tokensPerSec}`
+    );
+  };
+
+  // Pre-Flight Pipeline Doctor Audit Report & Auto-Fix Handlers
+  const activeDoctorModel = models.find((m) => m.id === selectedModelId) ?? models[0];
+  const datasetHealthReport = validateDatasetRecords(samples);
+  const visionDensityReport = computeVisionTokenizerAndPatchDensity(visionSamples);
+
+  const pipelineDoctorReport = runPipelineDoctorAudit({
+    modelName: activeDoctorModel.name,
+    paramsBillions: activeDoctorModel.paramsBillions,
+    hpoConfig: activeHpoConfig,
+    samplePackingEnabled: doctorSamplePacking,
+    completionOnlyLossEnabled: doctorCompletionOnlyLoss,
+    stage2Enabled: true,
+    alignmentMethod: 'ORPO',
+    grpoEnabled: true,
+    vramUsedGb: gpuStats.vramUsedGb,
+    vramTotalGb: gpuStats.vramTotalGb,
+    datasetHealthScore: datasetHealthReport.overallHealthScore,
+    freezeVisionTower: doctorFreezeVisionTower,
+    excessiveNavitSampleCount: visionDensityReport.excessiveNavitSampleCount,
+  });
+
+  const handleApplyDoctorFix = (
+    fixKey: NonNullable<PipelineDoctorCheckItem['autoFixKey']>
+  ) => {
+    if (fixKey === 'CLAMP_LEARNING_RATE') {
+      setActiveHpoConfig((prev) => ({ ...prev, learningRate: 0.0002 }));
+    } else if (fixKey === 'FIX_LORA_ALPHA_RATIO') {
+      setActiveHpoConfig((prev) => ({ ...prev, loraAlpha: prev.loraRank * 2 }));
+    } else if (fixKey === 'ENABLE_PACKING_AND_MASKING') {
+      setDoctorSamplePacking(true);
+      setDoctorCompletionOnlyLoss(true);
+    } else if (fixKey === 'ENABLE_NEFTUNE_AND_WSD') {
+      setActiveHpoConfig((prev) => ({
+        ...prev,
+        neftuneAlpha: 5,
+        lrScheduler: 'wsd',
+      }));
+    } else if (fixKey === 'FREEZE_VISION_TOWER') {
+      setDoctorFreezeVisionTower(true);
+    } else if (fixKey === 'CAP_NAVIT_PATCHES') {
+      const capped = capExcessiveNavitPatches(visionSamples, 896, 5.5, visionTargetFormat);
+      setVisionSamples(capped.updatedSamples);
+    }
+    appendLog(
+      'INFO',
+      'ORCHESTRATOR',
+      `Applied Pre-Flight Pipeline Doctor Auto-Fix: ${fixKey}`,
+      `model=${activeDoctorModel.name}`
+    );
+  };
+
+  const handleApplyAllDoctorFixes = () => {
+    for (const check of pipelineDoctorReport.checks) {
+      if (check.status !== 'PASS' && check.autoFixKey) {
+        handleApplyDoctorFix(check.autoFixKey);
+      }
+    }
+  };
+
   return (
     <div
       className="min-h-screen text-[#FFE9B1] flex flex-col transition-colors"
@@ -1312,8 +1398,16 @@ export default function App() {
           ))}
         </nav>
 
-        {/* Zone 3: 1 primary action */}
-        <div className="order-2 md:order-3 flex items-center gap-3 shrink-0">
+        {/* Zone 3: Pipeline Doctor + Primary Action */}
+        <div className="order-2 md:order-3 flex items-center gap-2.5 shrink-0">
+          <button
+            type="button"
+            onClick={() => setIsPipelineDoctorOpen(true)}
+            className="px-3 py-2 text-xs font-medium text-[#8EC07C] bg-[#1D2021] border border-[#8EC07C]/50 rounded-lg hover:bg-[#8EC07C]/15 transition-colors whitespace-nowrap shrink-0 flex items-center gap-1.5"
+          >
+            <Stethoscope className="w-3.5 h-3.5" />
+            <span>Pipeline Doctor ({pipelineDoctorReport.overallScore}%)</span>
+          </button>
           <button
             type="button"
             onClick={() => {
@@ -1463,6 +1557,7 @@ export default function App() {
               onSimulateGpuStressSpike={handleSimulateGpuStressSpike}
               onMitigateGpuOverload={handleMitigateGpuOverload}
               onRecordSafetensorsExport={handleRecordSafetensorsExport}
+              onStreamEngineMetricPoint={handleStreamEngineMetricPoint}
             />
           </div>
         )}
@@ -1553,6 +1648,15 @@ export default function App() {
         onClose={() => setIsCommandPaletteOpen(false)}
         actions={commandPaletteActions}
         onExecuteAction={handleExecuteCommandPaletteAction}
+      />
+
+      {/* Pre-Flight Pipeline Doctor Modal (12-Check Audit & 1-Click Auto-Fix) */}
+      <PipelineDoctorModal
+        isOpen={isPipelineDoctorOpen}
+        onClose={() => setIsPipelineDoctorOpen(false)}
+        report={pipelineDoctorReport}
+        onApplyAutoFix={handleApplyDoctorFix}
+        onApplyAllFixes={handleApplyAllDoctorFixes}
       />
 
       {/* Gruvbox Theme & Pipeline Status Footer */}
