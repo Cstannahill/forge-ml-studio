@@ -981,26 +981,73 @@ test('parseCustomDatasetUploadText, runAutomatedRedTeamStressSuite, generateLoca
 import {
   CURATED_VISION_BLENDS,
   INITIAL_VISION_MODELS,
+  VEIL_AUDIT_TAXONOMY,
   auditVisionTokenizerSpecialTokens,
   buildInitialVisionSamples,
+  buildVeilPrivacyAuditSeedSamples,
   buildVisionCurriculumPlan,
   calculateVisualPatchTokens,
+  capExcessiveNavitPatches,
   cleanAndNormalizeVisionSample,
   computeVisionPipelineHardwarePlan,
+  computeVisionTokenizerAndPatchDensity,
   generateVisionTeacherDistillationBatch,
   parseCustomVisionDatasetUpload,
   pruneVisionDatasetByAlignmentAndPhash,
   validateVisionDatasetCorpus,
 } from './visionPipelineLogic.ts';
 
-test('INITIAL_VISION_MODELS includes LFM2.5-VL-450M, LFM2.5-VL-1.6B, Qwen3.5-VL-0.8B, Qwen3.5-VL-2B, and Gemma4-E2B-Vision', () => {
+test('INITIAL_VISION_MODELS and CURATED_VISION_BLENDS include 5 multimodal models and 25 HuggingFace dataset blends including VEIL Privacy Hazard Auditing', () => {
   const modelIds = INITIAL_VISION_MODELS.map((m) => m.id);
   assert.ok(modelIds.includes('LiquidAI/LFM2.5-VL-450M-Instruct'));
   assert.ok(modelIds.includes('LiquidAI/LFM2.5-VL-1.6B-Instruct'));
   assert.ok(modelIds.includes('Qwen/Qwen3.5-VL-0.8B-Instruct'));
   assert.ok(modelIds.includes('Qwen/Qwen3.5-VL-2B-Instruct'));
   assert.ok(modelIds.includes('google/gemma-4-e2b-vision-it'));
-  assert.equal(CURATED_VISION_BLENDS.length, 5);
+  assert.equal(CURATED_VISION_BLENDS.length, 25);
+
+  const veilBlends = CURATED_VISION_BLENDS.filter(
+    (b) => b.taskCategory === 'VEIL_PRIVACY_AUDIT'
+  );
+  assert.equal(veilBlends.length, 6);
+
+  // Every blend dataset weight sum must equal 100%
+  for (const blend of CURATED_VISION_BLENDS) {
+    const sumWeights = blend.datasets.reduce((acc, ds) => acc + ds.weightPct, 0);
+    assert.equal(sumWeights, 100, `Expected blend ${blend.id} weights to sum to 100, got ${sumWeights}`);
+  }
+});
+
+test('VEIL_AUDIT_TAXONOMY and buildVeilPrivacyAuditSeedSamples cover all 5 VEIL categories with 25/20/25/10/20 split and BLUR/MOSAIC/SAFE_PASS actions', () => {
+  assert.equal(VEIL_AUDIT_TAXONOMY.length, 5);
+  const totalSplit = VEIL_AUDIT_TAXONOMY.reduce((acc, c) => acc + c.splitAllocationPct, 0);
+  assert.equal(totalSplit, 100);
+  assert.equal(VEIL_AUDIT_TAXONOMY[3].defaultSuggestedAction, 'MOSAIC');
+  assert.equal(VEIL_AUDIT_TAXONOMY[4].defaultSuggestedAction, 'SAFE_PASS');
+
+  const veilSamples = buildVeilPrivacyAuditSeedSamples('QWEN_VL_CHATML');
+  assert.equal(veilSamples.length, 5);
+  assert.ok(veilSamples[3].assistantOutput.includes('"suggested_action": "MOSAIC"'));
+  assert.ok(veilSamples[4].assistantOutput.includes('"suggested_action": "SAFE_PASS"'));
+});
+
+test('computeVisionTokenizerAndPatchDensity and capExcessiveNavitPatches quantify image-to-text token ratios and clamp excessive NaViT patches', () => {
+  const initialSamples = buildInitialVisionSamples('QWEN_VL_CHATML');
+  assert.equal(initialSamples.length, 6);
+
+  const densityBefore = computeVisionTokenizerAndPatchDensity(initialSamples, 5.5, 896);
+  assert.equal(densityBefore.totalSamples, 6);
+  assert.equal(densityBefore.ratioDistributionBuckets.length, 4);
+  assert.ok(densityBefore.excessiveNavitSampleCount >= 1);
+  assert.ok(densityBefore.excessiveSampleIds.includes('vlm-sample-006'));
+  assert.ok(densityBefore.maxImageToTextRatio > 6.5);
+
+  const capped = capExcessiveNavitPatches(initialSamples, 896, 5.5, 'QWEN_VL_CHATML');
+  assert.ok(capped.cappedCount >= 1);
+  assert.ok(capped.tokensSavedPerEpoch > 100);
+
+  const densityAfter = computeVisionTokenizerAndPatchDensity(capped.updatedSamples, 5.5, 896);
+  assert.equal(densityAfter.excessiveNavitSampleCount, 0);
 });
 
 test('computeVisionPipelineHardwarePlan isolates VLM gradients, calculates frozen vs unfrozen Vision Tower VRAM, and outputs mmproj-f16.gguf', () => {
@@ -1014,8 +1061,9 @@ test('computeVisionPipelineHardwarePlan isolates VLM gradients, calculates froze
       minPixels: 256 * 28 * 28,
       maxPixels: 768 * 28 * 28,
       patchSizePx: 28,
-      visionProjectorLrMultiplier: 5,
-      exportSeparateMmprojFp16: true,
+      enable2dRopeScaling: true,
+      maskImagePromptTokens: true,
+      exportMmprojFp16: true,
     },
     32,
     8
@@ -1029,8 +1077,9 @@ test('computeVisionPipelineHardwarePlan isolates VLM gradients, calculates froze
       minPixels: 256 * 28 * 28,
       maxPixels: 768 * 28 * 28,
       patchSizePx: 28,
-      visionProjectorLrMultiplier: 5,
-      exportSeparateMmprojFp16: true,
+      enable2dRopeScaling: true,
+      maskImagePromptTokens: true,
+      exportMmprojFp16: true,
     },
     32,
     8
@@ -1042,11 +1091,11 @@ test('computeVisionPipelineHardwarePlan isolates VLM gradients, calculates froze
 
 test('Vision Dataset Studio functions: validateVisionDatasetCorpus, cleanAndNormalizeVisionSample, generateVisionTeacherDistillationBatch, pruneVisionDatasetByAlignmentAndPhash, buildVisionCurriculumPlan, auditVisionTokenizerSpecialTokens, and parseCustomVisionDatasetUpload work end-to-end', () => {
   const initialSamples = buildInitialVisionSamples('QWEN_VL_CHATML');
-  assert.equal(initialSamples.length, 5);
+  assert.equal(initialSamples.length, 6);
   assert.ok(initialSamples[0].formattedPayload.includes('<|vision_start|><|image_pad|><|vision_end|>'));
 
   const reportBefore = validateVisionDatasetCorpus(initialSamples);
-  assert.equal(reportBefore.totalSamples, 5);
+  assert.equal(reportBefore.totalSamples, 6);
   assert.equal(reportBefore.exifOrFacePiiCount, 1);
 
   const cleanedSamples = initialSamples.map((s) =>
@@ -1066,12 +1115,12 @@ test('Vision Dataset Studio functions: validateVisionDatasetCorpus, cleanAndNorm
   assert.ok(distilled.avgJudgeScore >= 9.0);
 
   const pruned = pruneVisionDatasetByAlignmentAndPhash(cleanedSamples, 0.90);
-  assert.ok(pruned.retainedSamples.length >= 4);
+  assert.ok(pruned.retainedSamples.length >= 5);
   assert.ok(pruned.meanAlignmentAfter >= pruned.meanAlignmentBefore);
 
   const curriculum = buildVisionCurriculumPlan(cleanedSamples, 600);
   assert.equal(curriculum.phases.length, 3);
-  assert.equal(curriculum.orderedSamples.length, 5);
+  assert.equal(curriculum.orderedSamples.length, 6);
 
   const tokAudit = auditVisionTokenizerSpecialTokens('Qwen3.5');
   assert.equal(tokAudit.allSpecialTokensAtomic, true);
@@ -1086,6 +1135,7 @@ test('Vision Dataset Studio functions: validateVisionDatasetCorpus, cleanAndNorm
   assert.equal(customParsed.samples.length, 1);
   assert.equal(calculateVisualPatchTokens(1024, 768), 1003);
 });
+
 
 
 

@@ -1,5 +1,7 @@
 import React, { useMemo, useState } from 'react';
 import {
+  AlertTriangle,
+  BarChart3,
   CheckCircle2,
   Eye,
   FileCode2,
@@ -9,6 +11,7 @@ import {
   Layers,
   RefreshCw,
   Search,
+  ShieldAlert,
   ShieldCheck,
   Sparkles,
   Upload,
@@ -18,12 +21,17 @@ import {
   CuratedVisionBlend,
   NormalizedVisionSample,
   RegisteredVisionModel,
+  VEIL_AUDIT_TAXONOMY,
+  VEIL_COMPOSITION_DIVERSITY_RULES,
   VisionTaskCategory,
   VisionTargetFormat,
   auditVisionTokenizerSpecialTokens,
+  buildVeilPrivacyAuditSeedSamples,
   buildVisionCurriculumPlan,
   calculateVisualPatchTokens,
+  capExcessiveNavitPatches,
   cleanAndNormalizeVisionSample,
+  computeVisionTokenizerAndPatchDensity,
   formatVisionSamplePayload,
   generateVisionTeacherDistillationBatch,
   parseCustomVisionDatasetUpload,
@@ -61,28 +69,64 @@ export const VisionDatasetStudioView: React.FC<VisionDatasetStudioViewProps> = (
     [visionModels, selectedVisionModelId]
   );
 
-  // Filter Curated Vision Blends
+  // Filter & Search Curated Vision Blends (25 Blends)
   const [selectedBlendCategory, setSelectedBlendCategory] = useState<VisionTaskCategory | 'ALL'>('ALL');
-  const filteredBlends = useMemo(
+  const [blendSearchQuery, setBlendSearchQuery] = useState<string>('');
+  const [showAllBlends, setShowAllBlends] = useState<boolean>(true);
+
+  const filteredBlends = useMemo(() => {
+    const q = blendSearchQuery.trim().toLowerCase();
+    return CURATED_VISION_BLENDS.filter((b) => {
+      const matchesCat =
+        selectedBlendCategory === 'ALL' || b.taskCategory === selectedBlendCategory;
+      if (!matchesCat) return false;
+      if (!q) return true;
+      return (
+        b.title.toLowerCase().includes(q) ||
+        b.description.toLowerCase().includes(q) ||
+        b.datasets.some(
+          (d) => d.hfRepoId.toLowerCase().includes(q) || d.focus.toLowerCase().includes(q)
+        )
+      );
+    });
+  }, [selectedBlendCategory, blendSearchQuery]);
+
+  // VEIL Taxonomy Active Category Inspector
+  const [selectedVeilCatNumber, setSelectedVeilCatNumber] = useState<1 | 2 | 3 | 4 | 5>(1);
+  const activeVeilSpec = useMemo(
     () =>
-      CURATED_VISION_BLENDS.filter(
-        (b) => selectedBlendCategory === 'ALL' || b.taskCategory === selectedBlendCategory
+      VEIL_AUDIT_TAXONOMY.find((c) => c.categoryNumber === selectedVeilCatNumber) ??
+      VEIL_AUDIT_TAXONOMY[0],
+    [selectedVeilCatNumber]
+  );
+
+  // Vision Tokenizer & Patch Density Threshold Controls
+  const [maxRecommendedRatio, setMaxRecommendedRatio] = useState<number>(5.5);
+  const [maxRecommendedPatches, setMaxRecommendedPatches] = useState<number>(896);
+  const [lastPatchCapSummary, setLastPatchCapSummary] = useState<string | null>(null);
+
+  const patchDensityReport = useMemo(
+    () =>
+      computeVisionTokenizerAndPatchDensity(
+        visionSamples,
+        maxRecommendedRatio,
+        maxRecommendedPatches
       ),
-    [selectedBlendCategory]
+    [visionSamples, maxRecommendedRatio, maxRecommendedPatches]
   );
 
   // HF Hub Multimodal Repo Ingestion
   const [hfVisionRepoInput, setHfVisionRepoInput] = useState<string>(
     'HuggingFaceM4/the_cauldron'
   );
-  const [hfVisionTaskTag, setHfVisionTaskTag] = useState<VisionTaskCategory>('OCR_DOCUMENT');
+  const [hfVisionTaskTag, setHfVisionTaskTag] = useState<VisionTaskCategory>('VEIL_PRIVACY_AUDIT');
 
   // VLM Teacher Distillation State
   const [teacherModel, setTeacherModel] = useState<string>('Qwen2.5-VL-72B-Instruct');
   const [distillTaskCategory, setDistillTaskCategory] =
-    useState<VisionTaskCategory>('UI_GROUNDING');
+    useState<VisionTaskCategory>('VEIL_PRIVACY_AUDIT');
   const [distillSeedTopic, setDistillSeedTopic] = useState<string>(
-    'Dense financial table OCR + interactive button bounding-box grounding'
+    'VEIL Privacy Hazard Audit: Curved amber Rx bottle + bathroom mirror camera rig reflection'
   );
   const [lastDistillSummary, setLastDistillSummary] = useState<string | null>(null);
 
@@ -102,15 +146,15 @@ export const VisionDatasetStudioView: React.FC<VisionDatasetStudioViewProps> = (
 
   // Custom Multimodal Upload / Raw Paste State
   const [customVisionSourceLabel, setCustomVisionSourceLabel] = useState<string>(
-    'CustomVision/edge-camera-manifest.jsonl'
+    'CustomVision/veil-audit-manifest.jsonl'
   );
   const [customVisionRawText, setCustomVisionRawText] = useState<string>(
-    `{"image": "s3://forgeml-vision/custom/pcb_thermal_01.png", "width": 1280, "height": 960, "instruction": "Detect thermal hotspot on MOSFET Q4 and output JSON with [0,1000] bounding box.", "output": "{\\"component\\": \\"MOSFET_Q4\\", \\"peak_temp_c\\": 94.2, \\"status\\": \\"CRITICAL\\"}", "box2d": [520, 310, 840, 680]}\n{"image": "s3://forgeml-vision/custom/invoice_latam_09.png", "width": 1024, "height": 1024, "instruction": "Extract tax ID and subtotal from scanned receipt.", "output": "{\\"tax_id\\": \\"BR-99281-01\\", \\"subtotal\\": 418.50}", "box2d": [140, 620, 780, 880]}`
+    `{"image": "s3://veil-audit/custom/nightstand_shipping_box_01.png", "width": 1280, "height": 960, "instruction": "[VEIL Task 1] Detect shipping label recipient address and QR barcode in [0,1000] coordinates.", "output": "{\\"veil_category\\": \\"1_RESIDENTIAL_GEOLOCATION\\", \\"suggested_action\\": \\"REDACT\\"}", "box2d": [210, 440, 680, 820]}\n{"image": "s3://veil-audit/custom/wrist_tattoo_macro_04.png", "width": 1024, "height": 1024, "instruction": "[VEIL Task 4] Localize identifying wrist script tattoo and emit BLUR or MOSAIC action.", "output": "{\\"veil_category\\": \\"4_IDENTIFYING_BIOMETRIC_INK\\", \\"suggested_action\\": \\"MOSAIC\\"}", "box2d": [310, 390, 740, 660]}`
   );
 
   // DVC Commit Notes
   const [commitNotes, setCommitNotes] = useState<string>(
-    'Curated Vision-Language ChatML corpus with [0,1000] bounding-box verification & V-IFD alignment filter'
+    'Curated Vision-Language ChatML corpus with VEIL 5-Category Privacy Audit & NaViT patch density cap'
   );
 
   // Validation report
@@ -163,6 +207,7 @@ export const VisionDatasetStudioView: React.FC<VisionDatasetStudioViewProps> = (
   const handleLoadCuratedVisionBlend = (blend: CuratedVisionBlend) => {
     const now = Date.now();
     const previewKindMap: Record<VisionTaskCategory, NormalizedVisionSample['previewKind']> = {
+      VEIL_PRIVACY_AUDIT: 'INVOICE_OCR',
       OCR_DOCUMENT: 'INVOICE_OCR',
       UI_GROUNDING: 'UI_DASHBOARD',
       CHART_DIAGRAM: 'CHART_PLOT',
@@ -208,6 +253,32 @@ export const VisionDatasetStudioView: React.FC<VisionDatasetStudioViewProps> = (
       `Applied Curated Vision Blend "${blend.title}" (${blend.totalImagePairs}) for ${activeVisionModel.name}.`
     );
     setSelectedSampleId(newSample.id);
+  };
+
+  const handleInjectVeilSeedPack = () => {
+    const veilPack = buildVeilPrivacyAuditSeedSamples(visionTargetFormat);
+    const existingIds = new Set(visionSamples.map((s) => s.id));
+    const fresh = veilPack.filter((s) => !existingIds.has(s.id));
+    const merged = fresh.length > 0 ? [...fresh, ...visionSamples] : [...veilPack, ...visionSamples];
+
+    onUpdateVisionSamples(
+      merged,
+      `Injected VEIL 5-Category Privacy Hazard Audit Seed Pack (Tasks 1–5: Geolocation Mail, Amber Rx Vial, Mirror Crew Reflection, Biometric Tattoo MOSAIC, and Clean Studio Negative Baseline).`
+    );
+    if (veilPack[0]) {
+      setSelectedSampleId(veilPack[0].id);
+    }
+  };
+
+  const handleCapExcessiveNavitOutliers = () => {
+    const res = capExcessiveNavitPatches(
+      visionSamples,
+      maxRecommendedPatches,
+      maxRecommendedRatio,
+      visionTargetFormat
+    );
+    setLastPatchCapSummary(res.summary);
+    onUpdateVisionSamples(res.updatedSamples, res.summary);
   };
 
   const handleIngestHfVisionRepo = () => {
@@ -335,6 +406,8 @@ export const VisionDatasetStudioView: React.FC<VisionDatasetStudioViewProps> = (
     reader.readAsText(file);
   };
 
+  const displayedBlends = showAllBlends ? filteredBlends : filteredBlends.slice(0, 9);
+
   return (
     <div className="space-y-8">
       {/* Isolated VLM Track Guarantee Banner */}
@@ -346,9 +419,14 @@ export const VisionDatasetStudioView: React.FC<VisionDatasetStudioViewProps> = (
             <InfoTooltip glossaryKey="vlmIsolatedPipeline" />
           </div>
           <p className="text-xs text-[#D5C4A1] max-w-4xl leading-relaxed">
-            Multimodal datasets (<code className="font-mono text-[#83A598]">&lt;|vision_start|&gt;&lt;|image_pad|&gt;&lt;|vision_end|&gt;</code>, normalized <code className="font-mono text-[#83A598]">[0, 1000]</code>
-            bounding boxes, and dynamic NaViT/SigLIP patch tokens) are managed in this dedicated Vision
-            Dataset Studio so your pure Text Generation fine-tuning corpus remains 100% uncompromised.
+            Multimodal datasets (
+            <code className="font-mono text-[#83A598]">
+              &lt;|vision_start|&gt;&lt;|image_pad|&gt;&lt;|vision_end|&gt;
+            </code>
+            , normalized <code className="font-mono text-[#83A598]">[0, 1000]</code> bounding boxes,
+            VEIL privacy hazard auditing, and dynamic NaViT/SigLIP patch tokens) are managed in this
+            dedicated Vision Dataset Studio so your pure Text Generation fine-tuning corpus remains
+            100% uncompromised.
           </p>
         </div>
 
@@ -389,63 +467,79 @@ export const VisionDatasetStudioView: React.FC<VisionDatasetStudioViewProps> = (
         </div>
       </div>
 
-      {/* V01. Curated Sub-2B Vision-Language (VLM) Dataset Blends Library */}
+      {/* V01. Curated Sub-2B Vision-Language (VLM) Dataset Blends Library (25 Blends) */}
       <section className="bg-[#252423] border border-[#4A453E] rounded-xl p-6 space-y-5">
-        <div className="flex flex-col lg:flex-row lg:items-center justify-between gap-4 border-b border-[#3C3836] pb-4">
+        <div className="flex flex-col xl:flex-row xl:items-center justify-between gap-4 border-b border-[#3C3836] pb-4">
           <div>
             <h2 className="text-base font-semibold text-[#FFE9B1] flex items-center gap-2">
               <ImageIcon className="w-4 h-4 text-[#83A598]" />
-              V01. Curated Sub-2B Vision-Language (VLM) Dataset Blends Library
+              V01. Curated Sub-2B Vision-Language (VLM) Dataset Blends Library ({CURATED_VISION_BLENDS.length}{' '}
+              Task Blends)
               <InfoTooltip glossaryKey="bboxGrounding" />
             </h2>
             <p className="text-xs text-[#A89984] mt-0.5">
-              Task-specialized multimodal image-text blends tuned for{' '}
-              <span className="font-mono text-[#FFE9B1]">LFM2.5-VL-450M</span>,{' '}
-              <span className="font-mono text-[#FFE9B1]">LFM2.5-VL-1.6B</span>,{' '}
-              <span className="font-mono text-[#FFE9B1]">Qwen3.5-VL-0.8B/2B</span>, and{' '}
-              <span className="font-mono text-[#FFE9B1]">Gemma4-E2B-Vision</span>
+              25 thoughtfully engineered HuggingFace multimodal blends including the{' '}
+              <span className="font-mono text-[#FABD2F]">VEIL 5-Category Privacy Hazard Audit</span>{' '}
+              suite, OCR/DocVQA, GUI Grounding, Medical/Remote Sensing, Visual CoT, and 450M Edge VQA
             </p>
           </div>
 
-          <div className="flex flex-wrap items-center gap-1.5 bg-[#1D2021] p-1 rounded-lg border border-[#3C3836]">
-            {(
-              [
-                { id: 'ALL', label: 'All Vision Blends (5)' },
-                { id: 'OCR_DOCUMENT', label: 'OCR & Docs' },
-                { id: 'UI_GROUNDING', label: 'UI Grounding' },
-                { id: 'CHART_DIAGRAM', label: 'Charts & STEM' },
-                { id: 'VISUAL_COT_MATH', label: 'Visual <think> CoT' },
-                { id: 'SPATIAL_EDGE_VQA', label: 'Edge 450M Spatial' },
-              ] as const
-            ).map((tab) => (
-              <button
-                key={tab.id}
-                type="button"
-                onClick={() => setSelectedBlendCategory(tab.id)}
-                className={`px-2.5 py-1 text-xs font-medium rounded-md transition-colors ${
-                  selectedBlendCategory === tab.id
-                    ? 'bg-[#458588] text-[#FFE9B1]'
-                    : 'text-[#A89984] hover:text-[#FFE9B1]'
-                }`}
-              >
-                {tab.label}
-              </button>
-            ))}
+          <div className="flex flex-wrap items-center gap-2">
+            <div className="relative">
+              <Search className="w-3.5 h-3.5 text-[#A89984] absolute left-2.5 top-1/2 -translate-y-1/2" />
+              <input
+                type="text"
+                value={blendSearchQuery}
+                onChange={(e) => setBlendSearchQuery(e.target.value)}
+                placeholder="Search 25 HF vision blends..."
+                className="pl-8 pr-3 py-1 text-xs bg-[#1D2021] border border-[#4A453E] rounded-lg text-[#FFE9B1] font-mono w-52"
+              />
+            </div>
+
+            <div className="flex flex-wrap items-center gap-1 bg-[#1D2021] p-1 rounded-lg border border-[#3C3836]">
+              {(
+                [
+                  { id: 'ALL', label: `All (${CURATED_VISION_BLENDS.length})` },
+                  { id: 'VEIL_PRIVACY_AUDIT', label: 'VEIL Privacy Audit (6)' },
+                  { id: 'OCR_DOCUMENT', label: 'OCR & Docs (5)' },
+                  { id: 'UI_GROUNDING', label: 'UI & CAD (4)' },
+                  { id: 'CHART_DIAGRAM', label: 'Charts, Med & Geo (4)' },
+                  { id: 'VISUAL_COT_MATH', label: 'Visual <think> CoT (3)' },
+                  { id: 'SPATIAL_EDGE_VQA', label: 'Edge & Safety (3)' },
+                ] as const
+              ).map((tab) => (
+                <button
+                  key={tab.id}
+                  type="button"
+                  onClick={() => setSelectedBlendCategory(tab.id)}
+                  className={`px-2.5 py-1 text-xs font-medium rounded-md transition-colors ${
+                    selectedBlendCategory === tab.id
+                      ? 'bg-[#458588] text-[#FFE9B1]'
+                      : 'text-[#A89984] hover:text-[#FFE9B1]'
+                  }`}
+                >
+                  {tab.label}
+                </button>
+              ))}
+            </div>
           </div>
         </div>
 
         <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-4">
-          {filteredBlends.map((blend) => {
+          {displayedBlends.map((blend) => {
             const isRecommendedForActive = blend.recommendedModelIds.includes(
               activeVisionModel.id
             );
+            const isVeil = blend.taskCategory === 'VEIL_PRIVACY_AUDIT';
             return (
               <div
                 key={blend.id}
                 className={`p-4 rounded-xl border flex flex-col justify-between gap-4 transition-colors ${
-                  isRecommendedForActive
-                    ? 'bg-[#1D2021] border-[#83A598]/60'
-                    : 'bg-[#1D2021]/70 border-[#3C3836]'
+                  isVeil
+                    ? 'bg-[#1D2021] border-[#FABD2F]/55'
+                    : isRecommendedForActive
+                      ? 'bg-[#1D2021] border-[#83A598]/60'
+                      : 'bg-[#1D2021]/70 border-[#3C3836]'
                 }`}
               >
                 <div className="space-y-2.5">
@@ -453,7 +547,13 @@ export const VisionDatasetStudioView: React.FC<VisionDatasetStudioViewProps> = (
                     <span className="text-xs font-semibold text-[#FFE9B1] leading-snug">
                       {blend.title}
                     </span>
-                    <span className="px-2 py-0.5 text-[10px] font-mono rounded bg-[#252423] border border-[#4A453E] text-[#8EC07C] shrink-0">
+                    <span
+                      className={`px-2 py-0.5 text-[10px] font-mono rounded bg-[#252423] border shrink-0 ${
+                        isVeil
+                          ? 'border-[#FABD2F]/50 text-[#FABD2F]'
+                          : 'border-[#4A453E] text-[#8EC07C]'
+                      }`}
+                    >
                       {blend.expectedDocVqaLift}
                     </span>
                   </div>
@@ -462,11 +562,16 @@ export const VisionDatasetStudioView: React.FC<VisionDatasetStudioViewProps> = (
                   <div className="space-y-1 pt-1">
                     {blend.datasets.map((ds) => (
                       <div
-                        key={ds.hfRepoId}
-                        className="flex items-center justify-between text-[11px] font-mono bg-[#252423] px-2.5 py-1 rounded border border-[#3C3836]"
+                        key={`${blend.id}-${ds.hfRepoId}-${ds.weightPct}`}
+                        className="text-[11px] font-mono bg-[#252423] px-2.5 py-1.5 rounded border border-[#3C3836] space-y-0.5"
                       >
-                        <span className="text-[#D5C4A1] truncate">{ds.hfRepoId}</span>
-                        <span className="text-[#83A598] shrink-0 ml-2">{ds.weightPct}%</span>
+                        <div className="flex items-center justify-between">
+                          <span className="text-[#D5C4A1] truncate">{ds.hfRepoId}</span>
+                          <span className="text-[#83A598] shrink-0 ml-2 font-bold">
+                            {ds.weightPct}%
+                          </span>
+                        </div>
+                        <div className="text-[10px] text-[#A89984] truncate">{ds.focus}</div>
                       </div>
                     ))}
                   </div>
@@ -487,6 +592,463 @@ export const VisionDatasetStudioView: React.FC<VisionDatasetStudioViewProps> = (
               </div>
             );
           })}
+        </div>
+
+        {filteredBlends.length > 9 && (
+          <div className="flex items-center justify-between pt-2 border-t border-[#3C3836]">
+            <span className="text-xs font-mono text-[#A89984]">
+              Showing {displayedBlends.length} of {filteredBlends.length} matching Vision-Language dataset
+              blends
+            </span>
+            <button
+              type="button"
+              onClick={() => setShowAllBlends((prev) => !prev)}
+              className="px-3 py-1.5 text-xs font-mono text-[#83A598] hover:text-[#FFE9B1] bg-[#1D2021] border border-[#4A453E] rounded-lg"
+            >
+              {showAllBlends
+                ? 'Collapse to Top 9 Blends'
+                : `Show All ${filteredBlends.length} Vision Blends`}
+            </button>
+          </div>
+        )}
+      </section>
+
+      {/* V01B. VEIL Vision Privacy Hazard Auditing Taxonomy & 10k-15k Split Strategy Matrix */}
+      <section className="bg-[#252423] border border-[#FABD2F]/50 rounded-xl p-6 space-y-6">
+        <div className="flex flex-col lg:flex-row lg:items-center justify-between gap-4 border-b border-[#3C3836] pb-4">
+          <div className="space-y-1">
+            <div className="flex items-center gap-2 text-xs font-mono uppercase tracking-wider text-[#FABD2F]">
+              <ShieldAlert className="w-4 h-4" />
+              V01B. VEIL Vision Audit Taxonomy &amp; 10,000–15,000 Multi-Turn Split Strategy
+            </div>
+            <h3 className="text-base font-semibold text-[#FFE9B1]">
+              Visual Privacy Hazard Auditing Across 4 Primary Risk Categories + 1 Clean Invariant Control
+            </h3>
+            <p className="text-xs text-[#A89984] max-w-4xl">
+              Trains sub-2B VLMs to detect physical doxxing envelopes, medical/travel PII, specular
+              mirror crew reflections, and biometric ink (
+              <code className="font-mono text-[#D3869B]">
+                &quot;suggested_action&quot;: &quot;BLUR&quot; | &quot;MOSAIC&quot;
+              </code>
+              ) while holding false positives under <strong className="text-[#8EC07C]">&lt;2%</strong>{' '}
+              on clean studio sets.
+            </p>
+          </div>
+
+          <button
+            type="button"
+            onClick={handleInjectVeilSeedPack}
+            className="px-4 py-2.5 text-xs font-semibold text-[#1D2021] bg-[#FABD2F] hover:bg-[#fcce54] rounded-lg transition-colors shrink-0 flex items-center gap-2"
+          >
+            <ShieldCheck className="w-4 h-4" />
+            Inject VEIL 5-Category Multi-Turn Audit Seed Pack (5 Grounded Samples)
+          </button>
+        </div>
+
+        {/* 5-Category Split Table + Active Category Deep Dive */}
+        <div className="grid grid-cols-1 lg:grid-cols-12 gap-6">
+          {/* Left 7 cols: VEIL Taxonomy & Split Allocation Table */}
+          <div className="lg:col-span-7 space-y-4">
+            <div className="overflow-x-auto rounded-xl border border-[#3C3836] bg-[#1D2021]">
+              <table className="w-full text-left border-collapse">
+                <thead>
+                  <tr className="border-b border-[#3C3836] text-[11px] font-mono uppercase text-[#A89984] bg-[#252423]">
+                    <th className="py-2.5 px-3">VEIL Audit Category</th>
+                    <th className="py-2.5 px-3">Target Artifacts</th>
+                    <th className="py-2.5 px-3 text-right">Split %</th>
+                    <th className="py-2.5 px-3 text-right">Pair Count</th>
+                    <th className="py-2.5 px-3 text-right">Action</th>
+                  </tr>
+                </thead>
+                <tbody className="divide-y divide-[#3C3836] text-xs">
+                  {VEIL_AUDIT_TAXONOMY.map((cat) => {
+                    const isSelected = cat.categoryNumber === selectedVeilCatNumber;
+                    return (
+                      <tr
+                        key={cat.id}
+                        onClick={() => setSelectedVeilCatNumber(cat.categoryNumber)}
+                        className={`cursor-pointer transition-colors ${
+                          isSelected ? 'bg-[#458588]/25' : 'hover:bg-[#252423]/70'
+                        }`}
+                      >
+                        <td className="py-2.5 px-3 font-semibold text-[#FFE9B1]">
+                          {cat.shortTitle}
+                        </td>
+                        <td className="py-2.5 px-3 text-[11px] text-[#D5C4A1]">
+                          {cat.summaryFocus}
+                        </td>
+                        <td className="py-2.5 px-3 text-right font-mono font-bold text-[#83A598] tabular-nums">
+                          {cat.splitAllocationPct}%
+                        </td>
+                        <td className="py-2.5 px-3 text-right font-mono text-[11px] text-[#A89984] tabular-nums">
+                          {cat.targetPairCountRange.replace(' multi-turn pairs', '')}
+                        </td>
+                        <td className="py-2.5 px-3 text-right font-mono text-[10px]">
+                          <span
+                            className={`px-2 py-0.5 rounded border ${
+                              cat.defaultSuggestedAction === 'SAFE_PASS'
+                                ? 'border-[#8EC07C]/50 text-[#8EC07C] bg-[#8EC07C]/10'
+                                : cat.defaultSuggestedAction === 'MOSAIC'
+                                  ? 'border-[#D3869B]/50 text-[#D3869B] bg-[#D3869B]/10'
+                                  : 'border-[#FB4934]/50 text-[#FB4934] bg-[#FB4934]/10'
+                            }`}
+                          >
+                            {cat.defaultSuggestedAction}
+                          </span>
+                        </td>
+                      </tr>
+                    );
+                  })}
+                </tbody>
+              </table>
+            </div>
+
+            {/* Angle & Distance Diversity + Lighting/Occlusion Rules */}
+            <div className="p-4 rounded-xl bg-[#1D2021] border border-[#3C3836] space-y-3">
+              <div className="flex items-center justify-between text-xs">
+                <span className="font-semibold text-[#FFE9B1]">
+                  Camera Distance, Angle &amp; Occlusion Diversity Protocol
+                </span>
+                <span className="font-mono text-[11px] text-[#8EC07C]">
+                  {VEIL_COMPOSITION_DIVERSITY_RULES.totalCorpusTarget}
+                </span>
+              </div>
+
+              <div className="grid grid-cols-1 sm:grid-cols-3 gap-2.5">
+                {VEIL_COMPOSITION_DIVERSITY_RULES.distanceDistribution.map((dist) => (
+                  <div
+                    key={dist.tier}
+                    className="p-2.5 rounded-lg bg-[#252423] border border-[#3C3836] space-y-1"
+                  >
+                    <div className="flex items-center justify-between text-xs font-mono">
+                      <span className="text-[#FFE9B1] font-semibold">{dist.tier}</span>
+                      <span className="text-[#FABD2F] font-bold">{dist.sharePct}%</span>
+                    </div>
+                    <p className="text-[10px] text-[#A89984] leading-relaxed">
+                      {dist.description}
+                    </p>
+                  </div>
+                ))}
+              </div>
+
+              <div className="space-y-1 pt-1 border-t border-[#3C3836]">
+                <div className="text-[11px] font-mono text-[#83A598]">
+                  Lighting, Bokeh &amp; 30–50% Partial Occlusion Augmentation Rules:
+                </div>
+                {VEIL_COMPOSITION_DIVERSITY_RULES.lightingAndOcclusionRules.map((rule) => (
+                  <div key={rule} className="text-[11px] text-[#D5C4A1] flex items-start gap-2">
+                    <span className="text-[#FABD2F] font-mono">•</span>
+                    <span>{rule}</span>
+                  </div>
+                ))}
+              </div>
+            </div>
+          </div>
+
+          {/* Right 5 cols: Selected VEIL Category Artifact & Hard-Negative Specification */}
+          <div className="lg:col-span-5 p-5 rounded-xl bg-[#1D2021] border border-[#4A453E] flex flex-col justify-between space-y-4">
+            <div className="space-y-3">
+              <div className="flex items-center justify-between gap-2">
+                <span className="px-2.5 py-0.5 text-[11px] font-mono rounded bg-[#252423] border border-[#FABD2F]/50 text-[#FABD2F]">
+                  Category #{activeVeilSpec.categoryNumber} · {activeVeilSpec.splitAllocationPct}% Split (
+                  {activeVeilSpec.targetPairCountRange})
+                </span>
+                <span className="text-xs font-mono text-[#8EC07C]">
+                  Default Action: {activeVeilSpec.defaultSuggestedAction}
+                </span>
+              </div>
+
+              <h4 className="text-sm font-semibold text-[#FFE9B1]">
+                {activeVeilSpec.fullTitle}
+              </h4>
+
+              <div className="space-y-2">
+                <div className="text-[11px] font-mono uppercase text-[#83A598]">
+                  Target Objects &amp; High-Liability Artifacts:
+                </div>
+                {activeVeilSpec.targetArtifacts.map((art) => (
+                  <div
+                    key={art.name}
+                    className="p-2.5 rounded-lg bg-[#252423] border border-[#3C3836] space-y-0.5"
+                  >
+                    <div className="text-xs font-semibold text-[#FFE9B1]">{art.name}</div>
+                    <p className="text-[11px] text-[#A89984] leading-relaxed">{art.detail}</p>
+                  </div>
+                ))}
+              </div>
+
+              <div className="space-y-1.5 pt-1">
+                <div className="text-[11px] font-mono uppercase text-[#B8BB26]">
+                  Required Hard Negatives &amp; False-Positive Guards:
+                </div>
+                {activeVeilSpec.hardNegatives.map((hn) => (
+                  <div
+                    key={hn}
+                    className="px-2.5 py-1.5 rounded bg-[#252423] border border-[#3C3836] text-[11px] text-[#D5C4A1] font-mono"
+                  >
+                    ✓ {hn}
+                  </div>
+                ))}
+              </div>
+            </div>
+
+            <div className="pt-3 border-t border-[#3C3836] flex items-center justify-between text-[11px] font-mono text-[#A89984]">
+              <span>Click any row in the VEIL table to inspect artifacts</span>
+              <span className="text-[#8EC07C]">FPR Target &lt; 2.0%</span>
+            </div>
+          </div>
+        </div>
+      </section>
+
+      {/* V03B. Vision Tokenizer & Patch Density Chart (Image-to-Text Token Ratio Distribution) */}
+      <section className="bg-[#252423] border border-[#83A598]/60 rounded-xl p-6 space-y-6">
+        <div className="flex flex-col lg:flex-row lg:items-center justify-between gap-4 border-b border-[#3C3836] pb-4">
+          <div className="space-y-1">
+            <div className="flex items-center gap-2 text-xs font-mono uppercase tracking-wider text-[#83A598]">
+              <BarChart3 className="w-4 h-4" />
+              Vision Tokenizer &amp; Patch Density — Image-to-Text Token Ratio Distribution
+              <InfoTooltip glossaryKey="navitDynamicResolution" />
+            </div>
+            <h3 className="text-base font-semibold text-[#FFE9B1]">
+              NaViT / SigLIP Patch-to-Text Token Ratio Profiler &amp; Outlier Down-Tiler
+            </h3>
+            <p className="text-xs text-[#A89984] max-w-4xl">
+              Visualizes the distribution of <code className="font-mono text-[#8EC07C]">visualPatchTokens : textTokens</code>{' '}
+              ratios across the active dataset. When an uncropped 1080p/4K image generates &gt;900 NaViT
+              patches against a short 150-token text response (&gt;6.0x ratio), visual attention dilutes
+              text cross-entropy gradients in sub-2B VLMs.
+            </p>
+          </div>
+
+          <div className="flex flex-wrap items-center gap-3 shrink-0">
+            <div className="p-2.5 rounded-lg bg-[#1D2021] border border-[#3C3836]">
+              <div className="flex items-center justify-between gap-3 text-[11px] font-mono">
+                <span className="text-[#A89984]">Max Image:Text Ratio:</span>
+                <span className="text-[#FFE9B1] font-bold">{maxRecommendedRatio.toFixed(1)}x</span>
+              </div>
+              <input
+                type="range"
+                min={3.5}
+                max={7.5}
+                step={0.5}
+                value={maxRecommendedRatio}
+                onChange={(e) => setMaxRecommendedRatio(Number(e.target.value))}
+                className="w-36 accent-[#458588] mt-1"
+              />
+            </div>
+
+            <div className="p-2.5 rounded-lg bg-[#1D2021] border border-[#3C3836]">
+              <div className="flex items-center justify-between gap-3 text-[11px] font-mono">
+                <span className="text-[#A89984]">Max NaViT Patches:</span>
+                <span className="text-[#8EC07C] font-bold">{maxRecommendedPatches} tok</span>
+              </div>
+              <input
+                type="range"
+                min={512}
+                max={1280}
+                step={64}
+                value={maxRecommendedPatches}
+                onChange={(e) => setMaxRecommendedPatches(Number(e.target.value))}
+                className="w-36 accent-[#8EC07C] mt-1"
+              />
+            </div>
+
+            <button
+              type="button"
+              onClick={handleCapExcessiveNavitOutliers}
+              className="px-4 py-2.5 text-xs font-semibold text-[#1D2021] bg-[#8EC07C] hover:bg-[#9ed08c] rounded-lg transition-colors flex items-center gap-2"
+            >
+              <ShieldCheck className="w-4 h-4" />
+              Cap Excessive NaViT Patches ({patchDensityReport.excessiveNavitSampleCount} Outlier
+              {patchDensityReport.excessiveNavitSampleCount === 1 ? '' : 's'})
+            </button>
+          </div>
+        </div>
+
+        {/* Summary KPI Strip */}
+        <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
+          <div className="p-3.5 rounded-lg bg-[#1D2021] border border-[#3C3836]">
+            <div className="text-[11px] text-[#A89984]">Mean Image-to-Text Ratio</div>
+            <div className="text-base font-mono font-bold text-[#FFE9B1] mt-0.5 tabular-nums">
+              {patchDensityReport.meanImageToTextRatio}:1{' '}
+              <span className="text-xs font-normal text-[#83A598]">
+                ({patchDensityReport.avgVisualPatchTokens}p / {patchDensityReport.avgTextTokens}t)
+              </span>
+            </div>
+          </div>
+
+          <div className="p-3.5 rounded-lg bg-[#1D2021] border border-[#3C3836]">
+            <div className="text-[11px] text-[#A89984]">Min / Max Ratio Spread</div>
+            <div className="text-base font-mono font-bold text-[#83A598] mt-0.5 tabular-nums">
+              {patchDensityReport.minImageToTextRatio}x – {patchDensityReport.maxImageToTextRatio}x
+            </div>
+          </div>
+
+          <div className="p-3.5 rounded-lg bg-[#1D2021] border border-[#3C3836]">
+            <div className="text-[11px] text-[#A89984]">Recommended NaViT Budget</div>
+            <div className="text-base font-mono font-bold text-[#8EC07C] mt-0.5 tabular-nums">
+              &le;{maxRecommendedPatches} patches (&le;{maxRecommendedRatio}x)
+            </div>
+          </div>
+
+          <div className="p-3.5 rounded-lg bg-[#1D2021] border border-[#3C3836]">
+            <div className="text-[11px] text-[#A89984]">Excessive NaViT Outliers</div>
+            <div
+              className={`text-base font-mono font-bold mt-0.5 tabular-nums flex items-center gap-1.5 ${
+                patchDensityReport.excessiveNavitSampleCount > 0
+                  ? 'text-[#FB4934]'
+                  : 'text-[#B8BB26]'
+              }`}
+            >
+              {patchDensityReport.excessiveNavitSampleCount > 0 && (
+                <AlertTriangle className="w-4 h-4 text-[#FB4934]" />
+              )}
+              {patchDensityReport.excessiveNavitSampleCount} sample(s) flagged
+            </div>
+          </div>
+        </div>
+
+        {lastPatchCapSummary && (
+          <div className="p-3 rounded-lg bg-[#1D2021] border border-[#8EC07C]/45 text-xs font-mono text-[#8EC07C]">
+            {lastPatchCapSummary}
+          </div>
+        )}
+
+        {/* Dual Chart Grid: Bucket Distribution Histogram + Per-Sample Ratio Bar Breakdown */}
+        <div className="grid grid-cols-1 lg:grid-cols-12 gap-6">
+          {/* Left 5 Cols: Image-to-Text Token Ratio Distribution Histogram */}
+          <div className="lg:col-span-5 p-4 rounded-xl bg-[#1D2021] border border-[#3C3836] space-y-4">
+            <div className="flex items-center justify-between">
+              <span className="text-xs font-semibold text-[#FFE9B1]">
+                Image-to-Text Ratio Distribution (Histogram)
+              </span>
+              <span className="text-[11px] font-mono text-[#A89984]">
+                {patchDensityReport.totalSamples} Active Samples
+              </span>
+            </div>
+
+            <div className="space-y-3.5">
+              {patchDensityReport.ratioDistributionBuckets.map((bucket) => {
+                const barColor =
+                  bucket.severity === 'OPTIMAL'
+                    ? 'bg-[#8EC07C]'
+                    : bucket.severity === 'BALANCED'
+                      ? 'bg-[#83A598]'
+                      : bucket.severity === 'DENSE'
+                        ? 'bg-[#FABD2F]'
+                        : 'bg-[#FB4934]';
+                const badgeColor =
+                  bucket.severity === 'OPTIMAL'
+                    ? 'text-[#8EC07C] border-[#8EC07C]/40'
+                    : bucket.severity === 'BALANCED'
+                      ? 'text-[#83A598] border-[#83A598]/40'
+                      : bucket.severity === 'DENSE'
+                        ? 'text-[#FABD2F] border-[#FABD2F]/40'
+                        : 'text-[#FB4934] border-[#FB4934]/40';
+
+                return (
+                  <div key={bucket.bucketId} className="space-y-1.5">
+                    <div className="flex items-center justify-between text-xs font-mono">
+                      <span className="text-[#FFE9B1] font-semibold">{bucket.bucketLabel}</span>
+                      <span className={`px-2 py-0.5 text-[10px] rounded border ${badgeColor}`}>
+                        {bucket.sampleCount} sample(s) · {bucket.percentage}%
+                      </span>
+                    </div>
+                    <div className="text-[10px] text-[#A89984] flex items-center justify-between">
+                      <span>{bucket.rangeDescription}</span>
+                      {bucket.sampleCount > 0 && (
+                        <span className="font-mono text-[#D5C4A1]">
+                          avg {bucket.avgPatchTokens}p : {bucket.avgTextTokens}t
+                        </span>
+                      )}
+                    </div>
+                    <div className="w-full h-3 bg-[#252423] rounded-full overflow-hidden border border-[#3C3836]">
+                      <div
+                        className={`h-full ${barColor} transition-all duration-300`}
+                        style={{
+                          width: `${bucket.sampleCount > 0 ? Math.max(8, bucket.percentage) : 0}%`,
+                        }}
+                      />
+                    </div>
+                  </div>
+                );
+              })}
+            </div>
+          </div>
+
+          {/* Right 7 Cols: Per-Sample NaViT Patch Density vs Text Token Stacked Ratio Chart */}
+          <div className="lg:col-span-7 p-4 rounded-xl bg-[#1D2021] border border-[#3C3836] space-y-3">
+            <div className="flex items-center justify-between">
+              <span className="text-xs font-semibold text-[#FFE9B1]">
+                Per-Sample Visual Patch vs. Text Token Ratio Breakdown
+              </span>
+              <div className="flex items-center gap-3 text-[11px] font-mono">
+                <span className="flex items-center gap-1 text-[#83A598]">
+                  <span className="w-2.5 h-2.5 rounded-sm bg-[#458588] inline-block" /> Visual Patch
+                  Tokens
+                </span>
+                <span className="flex items-center gap-1 text-[#B8BB26]">
+                  <span className="w-2.5 h-2.5 rounded-sm bg-[#B8BB26] inline-block" /> Text
+                  Supervision Tokens
+                </span>
+              </div>
+            </div>
+
+            <div className="space-y-2.5 max-h-64 overflow-y-auto pr-1">
+              {patchDensityReport.sampleDensities.map((item) => (
+                <div
+                  key={item.id}
+                  onClick={() => setSelectedSampleId(item.id)}
+                  className={`p-2.5 rounded-lg border cursor-pointer transition-colors ${
+                    item.isExcessiveNavit
+                      ? 'bg-[#252423] border-[#FB4934]/60'
+                      : 'bg-[#252423]/70 border-[#3C3836] hover:border-[#504945]'
+                  }`}
+                >
+                  <div className="flex items-center justify-between gap-2 text-xs">
+                    <span className="font-semibold text-[#FFE9B1] truncate">
+                      {item.imageTitle}
+                    </span>
+                    <div className="flex items-center gap-2 shrink-0 font-mono text-[11px]">
+                      <span className="text-[#A89984]">
+                        {item.resolutionLabel} ({item.aspectRatioLabel})
+                      </span>
+                      <span
+                        className={`px-2 py-0.5 rounded font-bold ${
+                          item.isExcessiveNavit
+                            ? 'bg-[#FB4934]/20 text-[#FB4934] border border-[#FB4934]/50'
+                            : 'bg-[#1D2021] text-[#8EC07C] border border-[#3C3836]'
+                        }`}
+                      >
+                        {item.imageToTextRatio}:1 {item.isExcessiveNavit ? '· EXCESSIVE NaViT' : ''}
+                      </span>
+                    </div>
+                  </div>
+
+                  {/* Stacked Visual Patch vs Text Token Bar */}
+                  <div className="mt-2 flex items-center gap-2">
+                    <div className="flex-1 h-2.5 bg-[#1D2021] rounded-full overflow-hidden flex border border-[#3C3836]">
+                      <div
+                        className={
+                          item.isExcessiveNavit ? 'bg-[#FB4934]' : 'bg-[#458588]'
+                        }
+                        style={{ width: `${item.patchPercentOfTotal}%` }}
+                        title={`Visual Patch Tokens: ${item.visualPatchTokens} (${item.patchPercentOfTotal}%)`}
+                      />
+                      <div
+                        className="bg-[#B8BB26]"
+                        style={{ width: `${100 - item.patchPercentOfTotal}%` }}
+                        title={`Text Tokens: ${item.textTokens} (${100 - item.patchPercentOfTotal}%)`}
+                      />
+                    </div>
+                    <span className="text-[10px] font-mono text-[#D5C4A1] shrink-0 tabular-nums">
+                      {item.visualPatchTokens}p + {item.textTokens}t ({item.patchesPerMegapixel} p/MP)
+                    </span>
+                  </div>
+                </div>
+              ))}
+            </div>
+          </div>
         </div>
       </section>
 
@@ -524,6 +1086,7 @@ export const VisionDatasetStudioView: React.FC<VisionDatasetStudioViewProps> = (
                   onChange={(e) => setHfVisionTaskTag(e.target.value as VisionTaskCategory)}
                   className="w-full px-2.5 py-2 text-xs bg-[#1D2021] border border-[#4A453E] rounded-lg text-[#FFE9B1] font-mono"
                 >
+                  <option value="VEIL_PRIVACY_AUDIT">VEIL Privacy Hazard Audit</option>
                   <option value="OCR_DOCUMENT">OCR &amp; Document JSON</option>
                   <option value="UI_GROUNDING">UI Bounding-Box Grounding</option>
                   <option value="CHART_DIAGRAM">Chart &amp; Scientific Plot</option>
@@ -546,6 +1109,7 @@ export const VisionDatasetStudioView: React.FC<VisionDatasetStudioViewProps> = (
                   <option value="HuggingFaceM4/the_cauldron">HuggingFaceM4/the_cauldron</option>
                   <option value="Lin-Chen/ShareGPT4V">Lin-Chen/ShareGPT4V</option>
                   <option value="HuggingFaceM4/Docmatix">HuggingFaceM4/Docmatix</option>
+                  <option value="allenai/Molmo-PixMo-BoundingBoxes">allenai/Molmo-PixMo-BoundingBoxes</option>
                   <option value="agentsea/wave-ui-25k">agentsea/wave-ui-25k</option>
                   <option value="AI4Math/MathVista">AI4Math/MathVista</option>
                 </select>
@@ -662,6 +1226,7 @@ export const VisionDatasetStudioView: React.FC<VisionDatasetStudioViewProps> = (
                 onChange={(e) => setDistillTaskCategory(e.target.value as VisionTaskCategory)}
                 className="w-full px-2.5 py-2 text-xs bg-[#1D2021] border border-[#4A453E] rounded-lg text-[#FFE9B1] font-mono"
               >
+                <option value="VEIL_PRIVACY_AUDIT">VEIL Privacy Hazard Audit (Tasks 1–5)</option>
                 <option value="UI_GROUNDING">GUI &amp; Web Bounding-Box Grounding</option>
                 <option value="OCR_DOCUMENT">Multi-Column Table &amp; Receipt OCR</option>
                 <option value="CHART_DIAGRAM">Scientific Plot &amp; Diagram CoT</option>
@@ -773,7 +1338,7 @@ export const VisionDatasetStudioView: React.FC<VisionDatasetStudioViewProps> = (
                 type="text"
                 value={sampleSearchQuery}
                 onChange={(e) => setSampleSearchQuery(e.target.value)}
-                placeholder="Search OCR, UI, bbox tags..."
+                placeholder="Search VEIL, OCR, UI, bbox..."
                 className="pl-8 pr-3 py-1.5 text-xs bg-[#1D2021] border border-[#4A453E] rounded-lg text-[#FFE9B1] font-mono"
               />
             </div>
@@ -821,7 +1386,8 @@ export const VisionDatasetStudioView: React.FC<VisionDatasetStudioViewProps> = (
                   <div className="flex items-center justify-between text-[11px] font-mono text-[#A89984] mt-1.5">
                     <span>
                       Patch: <strong className="text-[#8EC07C]">{s.visualPatchTokens}</strong> + Text:{' '}
-                      <strong className="text-[#FFE9B1]">{s.textTokens}</strong> tok
+                      <strong className="text-[#FFE9B1]">{s.textTokens}</strong> tok (
+                      {(s.visualPatchTokens / Math.max(1, s.textTokens)).toFixed(1)}x)
                     </span>
                     <span>
                       V-IFD: <strong className="text-[#B8BB26]">{s.crossModalAlignmentScore}</strong> ·{' '}
@@ -836,7 +1402,7 @@ export const VisionDatasetStudioView: React.FC<VisionDatasetStudioViewProps> = (
             <div className="p-4 rounded-lg bg-[#1D2021] border border-[#3C3836] space-y-3">
               <div className="flex items-center justify-between text-xs">
                 <span className="font-semibold text-[#FFE9B1]">
-                  Visual Patch + Text Token Distribution
+                  Total Sequence Length Distribution
                 </span>
                 <span className="font-mono text-[11px] text-[#83A598]">
                   Max Context: {activeVisionModel.contextWindow.toLocaleString()} tok
@@ -876,11 +1442,15 @@ export const VisionDatasetStudioView: React.FC<VisionDatasetStudioViewProps> = (
                   <span className="text-[#FFE9B1] font-semibold">{activeSample.imageUri}</span>
                   <span className="text-[#8EC07C]">
                     {activeSample.visualPatchTokens} NaViT/SigLIP Patch Tokens +{' '}
-                    {activeSample.textTokens} Text Tokens = {activeSample.totalTokens} Total
+                    {activeSample.textTokens} Text Tokens = {activeSample.totalTokens} Total (
+                    {(
+                      activeSample.visualPatchTokens / Math.max(1, activeSample.textTokens)
+                    ).toFixed(2)}
+                    :1 ratio)
                   </span>
                 </div>
 
-                {/* SVG Grounded Visual Canvas (1000x600 coordinate space mapped to [0, 1000] x [0, 1000]) */}
+                {/* SVG Grounded Visual Canvas (1000x1000 coordinate space mapped to [0, 1000] x [0, 1000]) */}
                 <div className="relative w-full h-56 rounded-lg overflow-hidden bg-[#141617] border border-[#3C3836]">
                   <svg
                     viewBox="0 0 1000 1000"
@@ -909,16 +1479,22 @@ export const VisionDatasetStudioView: React.FC<VisionDatasetStudioViewProps> = (
                     {activeSample.previewKind === 'INVOICE_OCR' && (
                       <g>
                         <rect x="60" y="35" width="880" height="920" rx="12" fill="#22211F" stroke="#504945" strokeWidth="4" />
-                        <text x="100" y="105" fill="#FFE9B1" fontSize="34" fontFamily="monospace" fontWeight="bold">
-                          INVOICE #INV-1042 · TensorCore Cloud Inc.
+                        <text x="100" y="105" fill="#FFE9B1" fontSize="32" fontFamily="monospace" fontWeight="bold">
+                          {activeSample.taskCategory === 'VEIL_PRIVACY_AUDIT'
+                            ? 'VEIL PRIVACY AUDIT · FINE-PRINT PII & WAYBILL SCAN'
+                            : 'INVOICE #INV-1042 · TensorCore Cloud Inc.'}
                         </text>
                         <rect x="100" y="210" width="800" height="140" fill="#1D2021" stroke="#3C3836" strokeWidth="3" />
-                        <text x="125" y="290" fill="#D5C4A1" fontSize="28" fontFamily="monospace">
-                          SKU: 8x-A100-80GB-SXM4 | 320 hrs @ $1.85/hr | $592.00
+                        <text x="125" y="290" fill="#D5C4A1" fontSize="26" fontFamily="monospace">
+                          {activeSample.taskCategory === 'VEIL_PRIVACY_AUDIT'
+                            ? 'ADDR: 742 Evergreen Ter, Apt 4B | KEY FOB #1408'
+                            : 'SKU: 8x-A100-80GB-SXM4 | 320 hrs @ $1.85/hr | $592.00'}
                         </text>
                         <rect x="640" y="720" width="300" height="140" rx="8" fill="#1D2021" stroke="#B8BB26" strokeWidth="3" />
-                        <text x="665" y="805" fill="#B8BB26" fontSize="32" fontFamily="monospace" fontWeight="bold">
-                          TOTAL: $592.00 USD
+                        <text x="665" y="805" fill="#B8BB26" fontSize="30" fontFamily="monospace" fontWeight="bold">
+                          {activeSample.taskCategory === 'VEIL_PRIVACY_AUDIT'
+                            ? 'ACTION: REDACT'
+                            : 'TOTAL: $592.00 USD'}
                         </text>
                       </g>
                     )}
@@ -927,15 +1503,21 @@ export const VisionDatasetStudioView: React.FC<VisionDatasetStudioViewProps> = (
                       <g>
                         <rect x="50" y="50" width="900" height="900" rx="14" fill="#22211F" stroke="#504945" strokeWidth="4" />
                         <text x="100" y="140" fill="#FFE9B1" fontSize="34" fontFamily="monospace" fontWeight="bold">
-                          ForgeML Deployment Modal — UI Grounding Target
+                          {activeSample.taskCategory === 'VEIL_PRIVACY_AUDIT'
+                            ? 'VEIL Studio Set / Specular Reflection Frame'
+                            : 'ForgeML Deployment Modal — UI Grounding Target'}
                         </text>
                         <rect x="120" y="420" width="360" height="120" rx="10" fill="#1D2021" stroke="#FABD2F" strokeWidth="3" />
                         <text x="145" y="490" fill="#FABD2F" fontSize="26" fontFamily="monospace">
-                          Format: GGUF-Q4_K_M ▼
+                          {activeSample.taskCategory === 'VEIL_PRIVACY_AUDIT'
+                            ? 'Mirror / Surface ROI'
+                            : 'Format: GGUF-Q4_K_M ▼'}
                         </text>
                         <rect x="540" y="720" width="380" height="140" rx="12" fill="#458588" />
                         <text x="570" y="805" fill="#FFE9B1" fontSize="28" fontFamily="monospace" fontWeight="bold">
-                          Export GGUF + mmproj
+                          {activeSample.taskCategory === 'VEIL_PRIVACY_AUDIT'
+                            ? 'VEIL Audit Region'
+                            : 'Export GGUF + mmproj'}
                         </text>
                       </g>
                     )}
@@ -977,11 +1559,15 @@ export const VisionDatasetStudioView: React.FC<VisionDatasetStudioViewProps> = (
                           stroke="#FFE9B1"
                           strokeWidth="6"
                         />
-                        <text x="450" y="565" fill="#83A598" fontSize="32" fontFamily="monospace" fontWeight="bold">
-                          Diameter AB = 10 cm
+                        <text x="380" y="565" fill="#83A598" fontSize="30" fontFamily="monospace" fontWeight="bold">
+                          {activeSample.taskCategory === 'VEIL_PRIVACY_AUDIT'
+                            ? 'Biometric Ink vs Lace Shadow'
+                            : 'Diameter AB = 10 cm'}
                         </text>
-                        <text x="650" y="195" fill="#D3869B" fontSize="32" fontFamily="monospace" fontWeight="bold">
-                          C (90° Right Angle)
+                        <text x="580" y="195" fill="#D3869B" fontSize="30" fontFamily="monospace" fontWeight="bold">
+                          {activeSample.taskCategory === 'VEIL_PRIVACY_AUDIT'
+                            ? 'Action: MOSAIC / BLUR'
+                            : 'C (90° Right Angle)'}
                         </text>
                       </g>
                     )}
