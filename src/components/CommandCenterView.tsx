@@ -1,35 +1,54 @@
-import React, { useState } from 'react';
+import React, { useEffect, useState } from 'react';
 import {
   Activity,
+  Bookmark,
   Check,
   Clock,
   Copy,
   Cpu,
   Download,
+  FileCode,
   FileText,
+  GitCompare,
+  GitMerge,
   HardDrive,
+  Layers,
   PackageCheck,
   Play,
   RefreshCw,
+  RotateCcw,
+  ShieldCheck,
   Sliders,
+  Sparkles,
   Terminal,
   Zap,
 } from 'lucide-react';
 import {
+  AdapterMergeAlgorithm,
+  EXPERIMENT_SNAPSHOTS_STORAGE_KEY,
+  ExperimentSnapshot,
   GpuAlertThresholds,
   HyperparameterConfig,
   LoggingFramework,
+  PreferenceAlignmentMethod,
   SafetensorsDeploymentFormat,
   SafetensorsExportPlan,
   SafetensorsExportPrecision,
   SafetensorsRuntimeTarget,
+  SpecialistAdapterInput,
   StandardizedModelCardResult,
   TrialOutcome,
   buildSafetensorsExportPlan,
+  computeMultiAdapterMergePlan,
   computeNextHyperparameters,
+  computePackingAndMaskingMetrics,
+  computePreferenceAlignmentPlan,
   computeTrainingProgressTelemetry,
   createSafetensorsBinaryArtifact,
+  diffExperimentSnapshots,
+  evaluateEarlyStoppingWatchdog,
   evaluateGpuThresholds,
+  generateExecutableRunBundle,
   generateStandardizedModelCard,
 } from '../lib/pipelineLogic';
 import {
@@ -48,6 +67,9 @@ interface CommandCenterViewProps {
   isTrainingActive: boolean;
   onRunTrainingStep: () => void;
   onResetTrainingSeries?: () => void;
+  onRollbackTrainingToIndex?: (stepIndex: number) => void;
+  onSimulateOverfitStep?: () => void;
+  onApplyStage2AlignmentBoost?: (method: PreferenceAlignmentMethod, ifEvalGain: number, mtBenchGain: number) => void;
   onRunHpoSweep: () => void;
   activeHpoConfig: HyperparameterConfig;
   onUpdateHpoConfig: (cfg: HyperparameterConfig) => void;
@@ -85,6 +107,9 @@ export const CommandCenterView: React.FC<CommandCenterViewProps> = ({
   isTrainingActive,
   onRunTrainingStep,
   onResetTrainingSeries,
+  onRollbackTrainingToIndex,
+  onSimulateOverfitStep,
+  onApplyStage2AlignmentBoost,
   onRunHpoSweep,
   activeHpoConfig,
   onUpdateHpoConfig,
@@ -171,7 +196,258 @@ export const CommandCenterView: React.FC<CommandCenterViewProps> = ({
     URL.revokeObjectURL(url);
   };
 
+  // 1. Stage 2 Preference Alignment (ORPO / SimPO / DPO / KTO) & Sequence Packing State
+  const [stage2Enabled, setStage2Enabled] = useState<boolean>(true);
+  const [alignmentMethod, setAlignmentMethod] = useState<PreferenceAlignmentMethod>('ORPO');
+  const [alignmentBeta, setAlignmentBeta] = useState<number>(0.1);
+  const [preferenceDataset, setPreferenceDataset] = useState<string>(
+    'argilla/ultrafeedback-binarized-preferences-cleaned'
+  );
+  const [alignmentExecutedMsg, setAlignmentExecutedMsg] = useState<string | null>(null);
+
+  const [samplePackingEnabled, setSamplePackingEnabled] = useState<boolean>(true);
+  const [completionOnlyLossEnabled, setCompletionOnlyLossEnabled] = useState<boolean>(true);
+
+  // 2. Early-Stopping Watchdog & Checkpoint Rollback State
+  const [watchdogPatience, setWatchdogPatience] = useState<number>(2);
+  const [watchdogMinDelta, setWatchdogMinDelta] = useState<number>(0.005);
+  const [watchdogRollbackBanner, setWatchdogRollbackBanner] = useState<string | null>(null);
+
+  // 3. Multi-Adapter Merger Studio State (DARE-TIES / TIES / SLERP / LINEAR)
+  const [mergeAlgorithm, setMergeAlgorithm] = useState<AdapterMergeAlgorithm>('DARE-TIES');
+  const [mergeDensity, setMergeDensity] = useState<number>(0.8);
+  const [specialistAdapters, setSpecialistAdapters] = useState<SpecialistAdapterInput[]>([
+    {
+      id: 'adapter-code-r32',
+      name: 'Code & Refactoring Specialist (r=32)',
+      domain: 'CODING',
+      weight: 0.4,
+      loraRank: 32,
+      enabled: true,
+    },
+    {
+      id: 'adapter-math-cot-r32',
+      name: 'Math & Step-by-Step CoT Adapter (r=32)',
+      domain: 'REASONING_MATH',
+      weight: 0.3,
+      loraRank: 32,
+      enabled: true,
+    },
+    {
+      id: 'adapter-json-tools-r16',
+      name: 'Strict JSON & Tool-Calling Router (r=16)',
+      domain: 'TOOL_CALLING',
+      weight: 0.2,
+      loraRank: 16,
+      enabled: true,
+    },
+    {
+      id: 'adapter-chat-ifeval-r16',
+      name: 'IFEval Constraint & Multi-Turn Chat (r=16)',
+      domain: 'INSTRUCTION_CHAT',
+      weight: 0.1,
+      loraRank: 16,
+      enabled: true,
+    },
+  ]);
+  const [customMergedCheckpointOverride, setCustomMergedCheckpointOverride] = useState<string | null>(
+    null
+  );
+  const [adapterPreviewTab, setAdapterPreviewTab] = useState<'yaml' | 'python'>('yaml');
+
+  // 4. 1-Click Executable Run Bundle Exporter State
+  const [bundlePreviewTab, setBundlePreviewTab] = useState<
+    'axolotl' | 'unsloth' | 'trl_orpo' | 'blend_json' | 'modelfile'
+  >('unsloth');
+  const [bundleDownloadedBanner, setBundleDownloadedBanner] = useState<string | null>(null);
+
+  // 5. Saved Experiment Profiles & Run History Diffing (Persisted in localStorage)
+  const defaultSnapshots: ExperimentSnapshot[] = [
+    {
+      id: 'snap-qwen2b-sft-base',
+      name: 'Run #1: Qwen3.5-2B Standard SFT (r=16, Padded)',
+      createdAt: '2026-10-19 14:20 UTC',
+      modelId: 'Qwen/Qwen3.5-2B-Instruct',
+      modelName: 'Qwen3.5-2B-Instruct',
+      architecture: 'Qwen3.5',
+      paramsBillions: 2.0,
+      datasetVersionId: 'v2.3.0',
+      hpoConfig: {
+        learningRate: 0.00015,
+        loraRank: 16,
+        loraAlpha: 32,
+        loraDropout: 0.05,
+        warmupRatio: 0.05,
+        weightDecay: 0.01,
+        neftuneAlpha: 0,
+        batchSize: 4,
+        lrScheduler: 'cosine',
+      },
+      samplePackingEnabled: false,
+      completionOnlyLossEnabled: false,
+      stage2Method: 'NONE',
+      finalStep: 300,
+      finalTrainLoss: 0.94,
+      finalValLoss: 1.06,
+      mmluPro: 63.2,
+      humanEval: 74.8,
+      gsm8k: 79.5,
+      ifEval: 76.4,
+    },
+    {
+      id: 'snap-qwen2b-multipack-orpo',
+      name: 'Run #2: Qwen3.5-2B Multipack + Stage 2 ORPO (r=32)',
+      createdAt: '2026-10-20 09:45 UTC',
+      modelId: 'Qwen/Qwen3.5-2B-Instruct',
+      modelName: 'Qwen3.5-2B-Instruct',
+      architecture: 'Qwen3.5',
+      paramsBillions: 2.0,
+      datasetVersionId: 'v2.4.0',
+      hpoConfig: {
+        learningRate: 0.0002,
+        loraRank: 32,
+        loraAlpha: 64,
+        loraDropout: 0.05,
+        warmupRatio: 0.05,
+        weightDecay: 0.01,
+        neftuneAlpha: 5,
+        batchSize: 8,
+        lrScheduler: 'wsd',
+      },
+      samplePackingEnabled: true,
+      completionOnlyLossEnabled: true,
+      stage2Method: 'ORPO',
+      finalStep: 350,
+      finalTrainLoss: 0.82,
+      finalValLoss: 0.93,
+      mmluPro: 65.8,
+      humanEval: 79.1,
+      gsm8k: 83.4,
+      ifEval: 81.2,
+    },
+    {
+      id: 'snap-lfm12b-edge',
+      name: 'Run #3: LFM2.5-1.2B Liquid Edge + SimPO (r=16)',
+      createdAt: '2026-10-20 18:10 UTC',
+      modelId: 'LiquidAI/LFM2.5-1.2B-Instruct',
+      modelName: 'LFM2.5-1.2B-Instruct (Liquid Edge)',
+      architecture: 'LFM2.5',
+      paramsBillions: 1.2,
+      datasetVersionId: 'v2.4.0',
+      hpoConfig: {
+        learningRate: 0.00025,
+        loraRank: 16,
+        loraAlpha: 32,
+        loraDropout: 0.05,
+        warmupRatio: 0.04,
+        weightDecay: 0.01,
+        neftuneAlpha: 5,
+        batchSize: 8,
+        lrScheduler: 'wsd',
+      },
+      samplePackingEnabled: true,
+      completionOnlyLossEnabled: true,
+      stage2Method: 'SimPO',
+      finalStep: 350,
+      finalTrainLoss: 0.79,
+      finalValLoss: 0.89,
+      mmluPro: 61.9,
+      humanEval: 73.5,
+      gsm8k: 78.6,
+      ifEval: 80.4,
+    },
+  ];
+
+  const [experimentSnapshots, setExperimentSnapshots] = useState<ExperimentSnapshot[]>(() => {
+    try {
+      const raw = window.localStorage.getItem(EXPERIMENT_SNAPSHOTS_STORAGE_KEY);
+      if (raw) {
+        const parsed = JSON.parse(raw);
+        if (Array.isArray(parsed) && parsed.length >= 2) {
+          return parsed;
+        }
+      }
+    } catch {
+      // ignore storage errors
+    }
+    return defaultSnapshots;
+  });
+
+  useEffect(() => {
+    try {
+      window.localStorage.setItem(
+        EXPERIMENT_SNAPSHOTS_STORAGE_KEY,
+        JSON.stringify(experimentSnapshots)
+      );
+    } catch {
+      // ignore storage errors
+    }
+  }, [experimentSnapshots]);
+
+  const [newSnapshotName, setNewSnapshotName] = useState('');
+  const [diffSnapAId, setDiffSnapAId] = useState<string>(defaultSnapshots[0].id);
+  const [diffSnapBId, setDiffSnapBId] = useState<string>(defaultSnapshots[1].id);
+  const [snapshotStatusBanner, setSnapshotStatusBanner] = useState<string | null>(null);
+
+  const alignmentPlan = computePreferenceAlignmentPlan({
+    method: alignmentMethod,
+    beta: alignmentBeta,
+    preferenceDataset,
+    paramsBillions: selectedModel.paramsBillions,
+    baseIfEval: selectedModel.fineTunedBenchmarks?.ifEval ?? selectedModel.baseBenchmarks.ifEval,
+    baseMtBench: selectedModel.fineTunedBenchmarks?.mtBench ?? selectedModel.baseBenchmarks.mtBench,
+  });
+
+  const packingMetrics = computePackingAndMaskingMetrics({
+    samplePackingEnabled,
+    completionOnlyLossEnabled,
+    maxSeqLength: Math.min(8192, selectedModel.contextWindow),
+    avgSampleTokens: 1480,
+    baseTokensPerSec: latestPoint.tokensPerSec,
+  });
+
+  const multiAdapterPlan = computeMultiAdapterMergePlan({
+    adapters: specialistAdapters,
+    algorithm: mergeAlgorithm,
+    density: mergeDensity,
+    baseModelId: selectedModel.id,
+    architecture: selectedModel.architecture,
+  });
+
+  const earlyStopReport = evaluateEarlyStoppingWatchdog({
+    trainingSeries,
+    patienceSteps: watchdogPatience,
+    minDelta: watchdogMinDelta,
+  });
+
+  const executableRunBundle = generateExecutableRunBundle({
+    modelId: selectedModel.id,
+    modelName: selectedModel.name,
+    architecture: selectedModel.architecture,
+    paramsBillions: selectedModel.paramsBillions,
+    contextWindow: selectedModel.contextWindow,
+    hpoConfig: activeHpoConfig,
+    datasetSources: activeDatasetCommit.sourceDatasets,
+    targetFormat: activeDatasetCommit.targetFormat,
+    samplePackingEnabled,
+    completionOnlyLossEnabled,
+    alignmentStage: {
+      enabled: stage2Enabled,
+      method: alignmentMethod,
+      beta: alignmentBeta,
+      preferenceDataset,
+    },
+  });
+
+  const snapA =
+    experimentSnapshots.find((s) => s.id === diffSnapAId) ?? experimentSnapshots[0];
+  const snapB =
+    experimentSnapshots.find((s) => s.id === diffSnapBId) ??
+    experimentSnapshots[Math.min(1, experimentSnapshots.length - 1)];
+  const snapshotDiff = diffExperimentSnapshots(snapA, snapB);
+
   const checkpointIdToExport =
+    customMergedCheckpointOverride ??
     selectedModel.fineTunedCheckpointId ??
     `ft-${selectedModel.name.toLowerCase().replace(/[^a-z0-9.]/g, '-')}-r${activeHpoConfig.loraRank}`;
 
@@ -1547,12 +1823,897 @@ export const CommandCenterView: React.FC<CommandCenterViewProps> = ({
         </div>
       </section>
 
+      {/* Section 05: Post-SFT Stage 2 Preference Alignment (ORPO / SimPO / DPO / KTO), Sequence Packing & Early-Stopping Watchdog */}
+      <section className="bg-[#111827] border border-slate-800/90 rounded-lg p-5 space-y-5">
+        <div className="flex flex-col lg:flex-row lg:items-center justify-between gap-4 pb-4 border-b border-slate-800/80">
+          <div>
+            <div className="flex items-center gap-2">
+              <span className="text-[11px] font-mono uppercase tracking-wider px-2 py-0.5 rounded bg-emerald-500/15 text-emerald-400">
+                Sub-2B Quality Optimizer · Stage 2 Alignment &amp; Packing
+              </span>
+              <span className="text-[11px] font-mono px-2 py-0.5 rounded bg-slate-800 text-slate-300">
+                {alignmentPlan.requiresReferenceModel
+                  ? 'Ref Model Required'
+                  : `Reference-Free (${alignmentPlan.vramSavingsPct}% VRAM Saved)`}
+              </span>
+            </div>
+            <h2 className="text-base font-semibold text-slate-100 mt-1.5 flex items-center">
+              <span>
+                05. Post-SFT Preference Alignment (ORPO / SimPO / DPO), Multipack &amp; Early-Stopping Watchdog
+              </span>
+              <InfoTooltip termKey="orpoAlignment" align="left" />
+            </h2>
+            <p className="text-xs text-slate-400 mt-0.5">
+              Eliminate sub-2B repetition loops and boost IFEval/MT-Bench via reference-free preference optimization, completion-only loss masking, and validation patience rollback
+            </p>
+          </div>
+
+          <div className="flex flex-wrap items-center gap-2 shrink-0">
+            <button
+              type="button"
+              onClick={() => setStage2Enabled((v) => !v)}
+              className={`px-3 py-1.5 text-xs font-mono font-medium rounded-lg border transition-colors ${
+                stage2Enabled
+                  ? 'bg-emerald-500/15 border-emerald-500/50 text-emerald-300'
+                  : 'bg-[#0B0F17] border-slate-800 text-slate-400'
+              }`}
+            >
+              {stage2Enabled ? 'Stage 1 SFT → Stage 2 Alignment: ON' : 'Stage 1 SFT Only'}
+            </button>
+
+            <button
+              type="button"
+              onClick={() => {
+                onApplyStage2AlignmentBoost?.(
+                  alignmentMethod,
+                  alignmentPlan.projectedIfEvalGain,
+                  alignmentPlan.projectedMtBenchGain
+                );
+                setAlignmentExecutedMsg(
+                  `Executed Stage 2 ${alignmentMethod} pass (β=${alignmentBeta}) on ${selectedModel.name}: IFEval +${alignmentPlan.projectedIfEvalGain}%, MT-Bench +${alignmentPlan.projectedMtBenchGain}, Repetition -${alignmentPlan.repetitionReductionPct}%`
+                );
+              }}
+              className="inline-flex items-center gap-1.5 px-3.5 py-2 text-xs font-medium text-white bg-blue-600 hover:bg-blue-500 rounded-lg transition-colors whitespace-nowrap"
+            >
+              <Sparkles className="w-3.5 h-3.5" />
+              Run Stage 2 {alignmentMethod} Alignment Pass
+            </button>
+          </div>
+        </div>
+
+        {alignmentExecutedMsg && (
+          <div
+            role="status"
+            className="bg-emerald-950/30 border border-emerald-500/40 rounded-lg px-4 py-2.5 text-xs font-mono text-emerald-300 flex items-center justify-between"
+          >
+            <span>{alignmentExecutedMsg}</span>
+            <button
+              type="button"
+              onClick={() => setAlignmentExecutedMsg(null)}
+              className="text-slate-400 hover:text-slate-200 text-[11px]"
+            >
+              Dismiss
+            </button>
+          </div>
+        )}
+
+        <div className="grid grid-cols-1 lg:grid-cols-12 gap-6">
+          {/* Left 5 cols: Stage 2 Preference Alignment Controls */}
+          <div className="lg:col-span-5 bg-[#0B0F17] border border-slate-800/90 rounded-lg p-4 space-y-4">
+            <div className="flex items-center justify-between">
+              <span className="text-xs font-semibold text-slate-200 inline-flex items-center">
+                Preference Optimization Method
+                <InfoTooltip termKey="orpoAlignment" align="left" />
+              </span>
+              <span className="text-[11px] font-mono text-emerald-400">
+                Est. VRAM: {alignmentPlan.estimatedVramGb} GB
+              </span>
+            </div>
+
+            <div className="grid grid-cols-4 gap-1.5">
+              {(['ORPO', 'SimPO', 'DPO', 'KTO'] as PreferenceAlignmentMethod[]).map((m) => (
+                <button
+                  key={m}
+                  type="button"
+                  onClick={() => setAlignmentMethod(m)}
+                  className={`py-2 px-2 rounded text-xs font-mono font-semibold border transition-colors ${
+                    alignmentMethod === m
+                      ? 'bg-blue-600/20 border-blue-500 text-blue-300'
+                      : 'bg-[#111827] border-slate-800 text-slate-400 hover:text-slate-200'
+                  }`}
+                >
+                  <div>{m}</div>
+                  <div className="text-[9px] font-normal text-slate-400 mt-0.5">
+                    {m === 'ORPO' || m === 'SimPO' ? 'Ref-Free' : 'Ref-Model'}
+                  </div>
+                </button>
+              ))}
+            </div>
+
+            <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+              <div>
+                <label
+                  htmlFor="alignment-beta-input"
+                  className="block text-[11px] text-slate-400 mb-1"
+                >
+                  Odds/Margin Weight (β / γ):{' '}
+                  <span className="font-mono text-slate-200">{alignmentBeta}</span>
+                </label>
+                <input
+                  id="alignment-beta-input"
+                  type="range"
+                  min={0.05}
+                  max={0.5}
+                  step={0.05}
+                  value={alignmentBeta}
+                  onChange={(e) => setAlignmentBeta(Number(e.target.value))}
+                  className="w-full accent-blue-500"
+                />
+              </div>
+
+              <div>
+                <label
+                  htmlFor="pref-dataset-select"
+                  className="block text-[11px] text-slate-400 mb-1"
+                >
+                  HF Preference Pair Corpus
+                </label>
+                <select
+                  id="pref-dataset-select"
+                  value={preferenceDataset}
+                  onChange={(e) => setPreferenceDataset(e.target.value)}
+                  className="w-full bg-[#111827] border border-slate-800 rounded px-2.5 py-1.5 text-xs font-mono text-slate-200"
+                >
+                  <option value="argilla/ultrafeedback-binarized-preferences-cleaned">
+                    argilla/ultrafeedback-binarized
+                  </option>
+                  <option value="HuggingFaceH4/orca_dpo_pairs">
+                    HuggingFaceH4/orca_dpo_pairs
+                  </option>
+                  <option value="princeton-nlp/llama3-ultrafeedback">
+                    princeton-nlp/llama3-ultrafeedback
+                  </option>
+                </select>
+              </div>
+            </div>
+
+            <div className="grid grid-cols-3 gap-2 pt-2 border-t border-slate-800/80 font-mono text-xs tabular-nums">
+              <div className="bg-[#111827] border border-slate-800/80 rounded p-2.5">
+                <div className="text-[10px] text-slate-400">IFEval Gain</div>
+                <div className="text-emerald-400 font-semibold mt-0.5">
+                  +{alignmentPlan.projectedIfEvalGain}%
+                </div>
+              </div>
+              <div className="bg-[#111827] border border-slate-800/80 rounded p-2.5">
+                <div className="text-[10px] text-slate-400">MT-Bench Gain</div>
+                <div className="text-emerald-400 font-semibold mt-0.5">
+                  +{alignmentPlan.projectedMtBenchGain}
+                </div>
+              </div>
+              <div className="bg-[#111827] border border-slate-800/80 rounded p-2.5">
+                <div className="text-[10px] text-slate-400">Repetition Drop</div>
+                <div className="text-blue-400 font-semibold mt-0.5">
+                  -{alignmentPlan.repetitionReductionPct}%
+                </div>
+              </div>
+            </div>
+
+            <div className="bg-[#111827] border border-slate-800/80 rounded p-3 text-[11px] font-mono space-y-1.5">
+              <div className="text-slate-400 flex justify-between">
+                <span>Chosen vs. Rejected Margin Preview</span>
+                <span className="text-emerald-400">
+                  Log-Odds Δ = +{alignmentPlan.chosenRejectedPreview.marginScore}
+                </span>
+              </div>
+              <div className="text-emerald-300 truncate">
+                [+] Chosen: {alignmentPlan.chosenRejectedPreview.chosen}
+              </div>
+              <div className="text-red-400/90 truncate">
+                [-] Rejected: {alignmentPlan.chosenRejectedPreview.rejected}
+              </div>
+            </div>
+          </div>
+
+          {/* Middle 4 cols: Sequence Packing (FlashAttention Multipack) & Completion-Only Loss Masking */}
+          <div className="lg:col-span-4 bg-[#0B0F17] border border-slate-800/90 rounded-lg p-4 flex flex-col justify-between space-y-4">
+            <div className="space-y-3">
+              <div className="flex items-center justify-between">
+                <span className="text-xs font-semibold text-slate-200 inline-flex items-center">
+                  Multipack &amp; Loss Masking
+                  <InfoTooltip termKey="sequencePacking" />
+                </span>
+                <span className="text-[11px] font-mono text-emerald-400">
+                  {packingMetrics.speedupMultiplier}x Speedup
+                </span>
+              </div>
+
+              <label className="flex items-start gap-2.5 p-2.5 rounded bg-[#111827] border border-slate-800 cursor-pointer">
+                <input
+                  type="checkbox"
+                  checked={samplePackingEnabled}
+                  onChange={(e) => setSamplePackingEnabled(e.target.checked)}
+                  className="mt-0.5 rounded border-slate-700 bg-slate-900 text-blue-600"
+                />
+                <div className="text-xs">
+                  <div className="font-medium text-slate-200">
+                    FlashAttention-2/3 Sample Packing (Multipack)
+                  </div>
+                  <div className="text-[11px] text-slate-400 mt-0.5">
+                    Concatenates short examples with block-diagonal varlen masks; cuts &lt;pad&gt; waste to {packingMetrics.paddingWastePct}%
+                  </div>
+                </div>
+              </label>
+
+              <label className="flex items-start gap-2.5 p-2.5 rounded bg-[#111827] border border-slate-800 cursor-pointer">
+                <input
+                  type="checkbox"
+                  checked={completionOnlyLossEnabled}
+                  onChange={(e) => setCompletionOnlyLossEnabled(e.target.checked)}
+                  className="mt-0.5 rounded border-slate-700 bg-slate-900 text-blue-600"
+                />
+                <div className="text-xs">
+                  <div className="font-medium text-slate-200">
+                    Completion-Only Loss Masking (Train on Responses Only)
+                  </div>
+                  <div className="text-[11px] text-slate-400 mt-0.5">
+                    Sets label=-100 on &lt;|im_start|&gt;user tokens ({packingMetrics.maskedPromptTokenRatioPct}% masked) so sub-2B capacity focuses 100% on completions
+                  </div>
+                </div>
+              </label>
+            </div>
+
+            <div className="pt-3 border-t border-slate-800/80 space-y-2 font-mono text-xs tabular-nums">
+              <div className="flex justify-between">
+                <span className="text-slate-400">Padding Token Waste:</span>
+                <span
+                  className={
+                    samplePackingEnabled ? 'text-emerald-400 font-semibold' : 'text-amber-400'
+                  }
+                >
+                  {packingMetrics.paddingWastePct}%
+                </span>
+              </div>
+              <div className="flex justify-between">
+                <span className="text-slate-400">Effective Packed Throughput:</span>
+                <span className="text-slate-100 font-semibold">
+                  {packingMetrics.effectiveThroughputTokSec.toLocaleString()} tok/s
+                </span>
+              </div>
+              <div className="flex justify-between">
+                <span className="text-slate-400">Est. Sub-2B Accuracy Lift:</span>
+                <span className="text-emerald-400 font-semibold">
+                  +{packingMetrics.estimatedSub2bAccuracyGainPct}% downstream
+                </span>
+              </div>
+            </div>
+          </div>
+
+          {/* Right 3 cols: Automated Early-Stopping & Checkpoint Rollback Watchdog */}
+          <div className="lg:col-span-3 bg-[#0B0F17] border border-slate-800/90 rounded-lg p-4 flex flex-col justify-between space-y-4">
+            <div className="space-y-3">
+              <div className="flex items-center justify-between">
+                <span className="text-xs font-semibold text-slate-200 inline-flex items-center">
+                  Early-Stop Watchdog
+                  <InfoTooltip termKey="earlyStopping" align="right" />
+                </span>
+                <span
+                  className={`text-[10px] font-mono px-1.5 py-0.5 rounded font-semibold ${
+                    earlyStopReport.shouldTriggerEarlyStop
+                      ? 'bg-red-500/20 text-red-400'
+                      : 'bg-emerald-500/15 text-emerald-400'
+                  }`}
+                >
+                  {earlyStopReport.statusLabel}
+                </span>
+              </div>
+
+              <div className="bg-[#111827] border border-slate-800 rounded p-2.5 font-mono text-xs tabular-nums space-y-1">
+                <div className="text-[10px] text-slate-400 uppercase">
+                  Best Val Loss Checkpoint Snapshot
+                </div>
+                <div className="text-sm font-semibold text-emerald-400">
+                  Step {earlyStopReport.bestCheckpoint.step} · Val{' '}
+                  {earlyStopReport.bestCheckpoint.valLoss.toFixed(3)}
+                </div>
+                <div className="text-[11px] text-slate-400">
+                  Epoch {earlyStopReport.bestCheckpoint.epoch} · Train{' '}
+                  {earlyStopReport.bestCheckpoint.trainLoss.toFixed(3)} · Gap{' '}
+                  {earlyStopReport.generalizationGap}
+                </div>
+              </div>
+
+              <div className="grid grid-cols-2 gap-2 text-xs">
+                <div>
+                  <label
+                    htmlFor="watchdog-patience-select"
+                    className="block text-[10px] text-slate-400 mb-1"
+                  >
+                    Patience (Evals)
+                  </label>
+                  <select
+                    id="watchdog-patience-select"
+                    value={watchdogPatience}
+                    onChange={(e) => setWatchdogPatience(Number(e.target.value))}
+                    className="w-full bg-[#111827] border border-slate-800 rounded px-2 py-1 text-xs font-mono text-slate-200"
+                  >
+                    <option value={1}>1 eval step</option>
+                    <option value={2}>2 eval steps</option>
+                    <option value={3}>3 eval steps</option>
+                    <option value={4}>4 eval steps</option>
+                  </select>
+                </div>
+                <div>
+                  <label
+                    htmlFor="watchdog-delta-select"
+                    className="block text-[10px] text-slate-400 mb-1"
+                  >
+                    Min Val Δ
+                  </label>
+                  <select
+                    id="watchdog-delta-select"
+                    value={watchdogMinDelta}
+                    onChange={(e) => setWatchdogMinDelta(Number(e.target.value))}
+                    className="w-full bg-[#111827] border border-slate-800 rounded px-2 py-1 text-xs font-mono text-slate-200"
+                  >
+                    <option value={0.002}>0.002</option>
+                    <option value={0.005}>0.005</option>
+                    <option value={0.01}>0.010</option>
+                  </select>
+                </div>
+              </div>
+
+              <p className="text-[11px] text-slate-400 leading-relaxed">
+                {earlyStopReport.recommendation}
+              </p>
+            </div>
+
+            <div className="space-y-2 pt-2 border-t border-slate-800/80">
+              <div className="flex items-center gap-1.5">
+                <button
+                  type="button"
+                  onClick={() => {
+                    onSimulateOverfitStep?.();
+                    setWatchdogRollbackBanner(null);
+                  }}
+                  className="flex-1 px-2.5 py-1.5 text-[11px] font-mono text-amber-300 bg-amber-500/10 hover:bg-amber-500/20 border border-amber-500/30 rounded transition-colors"
+                >
+                  Simulate Overfit Spike
+                </button>
+                <button
+                  type="button"
+                  onClick={() => {
+                    onRollbackTrainingToIndex?.(earlyStopReport.bestIndex);
+                    setWatchdogRollbackBanner(
+                      `Rolled back training state to Best Checkpoint Step ${earlyStopReport.bestCheckpoint.step} (val_loss=${earlyStopReport.bestCheckpoint.valLoss.toFixed(3)})`
+                    );
+                  }}
+                  className="flex-1 inline-flex items-center justify-center gap-1 px-2.5 py-1.5 text-[11px] font-mono font-semibold text-emerald-300 bg-emerald-500/15 hover:bg-emerald-500/25 border border-emerald-500/40 rounded transition-colors"
+                >
+                  <RotateCcw className="w-3 h-3" />
+                  Rollback to Best
+                </button>
+              </div>
+              {watchdogRollbackBanner && (
+                <div className="text-[11px] font-mono text-emerald-400">
+                  {watchdogRollbackBanner}
+                </div>
+              )}
+            </div>
+          </div>
+        </div>
+      </section>
+
+      {/* Section 06: Multi-Adapter Model Merging (DARE-TIES / SLERP) & 1-Click Executable Run Bundle Exporter */}
+      <div className="grid grid-cols-1 lg:grid-cols-12 gap-6">
+        {/* Left 6 cols: Multi-Adapter Model Merging & Task Arithmetic Studio */}
+        <section className="lg:col-span-6 bg-[#111827] border border-slate-800/90 rounded-lg p-5 flex flex-col justify-between space-y-4">
+          <div className="space-y-4">
+            <div className="flex flex-wrap items-center justify-between gap-2 pb-3 border-b border-slate-800/80">
+              <div>
+                <h2 className="text-base font-semibold text-slate-100 flex items-center">
+                  <span>06. Multi-Adapter Task Arithmetic Merger (DARE-TIES / SLERP)</span>
+                  <InfoTooltip termKey="adapterMerging" align="left" />
+                </h2>
+                <p className="text-xs text-slate-400 mt-0.5">
+                  Combine specialized sub-2B LoRA adapters without multi-task gradient interference
+                </p>
+              </div>
+
+              <div className="flex items-center gap-1 bg-[#0B0F17] p-1 rounded-lg border border-slate-800">
+                {(['DARE-TIES', 'TIES', 'SLERP', 'LINEAR'] as AdapterMergeAlgorithm[]).map(
+                  (alg) => (
+                    <button
+                      key={alg}
+                      type="button"
+                      onClick={() => setMergeAlgorithm(alg)}
+                      className={`px-2 py-1 text-[11px] font-mono rounded transition-colors ${
+                        mergeAlgorithm === alg
+                          ? 'bg-blue-600 text-white font-semibold'
+                          : 'text-slate-400 hover:text-slate-200'
+                      }`}
+                    >
+                      {alg}
+                    </button>
+                  )
+                )}
+              </div>
+            </div>
+
+            {/* Specialist Adapter Weight Sliders */}
+            <div className="space-y-2.5">
+              {specialistAdapters.map((adapter, idx) => (
+                <div
+                  key={adapter.id}
+                  className="bg-[#0B0F17] border border-slate-800/90 rounded-lg p-3 flex flex-col sm:flex-row sm:items-center justify-between gap-3"
+                >
+                  <label className="flex items-center gap-2 text-xs cursor-pointer">
+                    <input
+                      type="checkbox"
+                      checked={adapter.enabled}
+                      onChange={(e) => {
+                        const next = [...specialistAdapters];
+                        next[idx] = { ...adapter, enabled: e.target.checked };
+                        setSpecialistAdapters(next);
+                      }}
+                      className="rounded border-slate-700 bg-slate-900 text-blue-600"
+                    />
+                    <div>
+                      <div className="font-medium text-slate-200">{adapter.name}</div>
+                      <div className="text-[10px] font-mono text-slate-400">
+                        {adapter.id} · Domain: {adapter.domain}
+                      </div>
+                    </div>
+                  </label>
+
+                  <div className="flex items-center gap-2.5 sm:w-48">
+                    <input
+                      type="range"
+                      aria-label={`Weight for ${adapter.name}`}
+                      min={0.05}
+                      max={1.0}
+                      step={0.05}
+                      disabled={!adapter.enabled}
+                      value={adapter.weight}
+                      onChange={(e) => {
+                        const next = [...specialistAdapters];
+                        next[idx] = { ...adapter, weight: Number(e.target.value) };
+                        setSpecialistAdapters(next);
+                      }}
+                      className="w-full accent-blue-500"
+                    />
+                    <span className="text-xs font-mono tabular-nums text-slate-200 w-10 text-right">
+                      {adapter.enabled ? adapter.weight.toFixed(2) : 'OFF'}
+                    </span>
+                  </div>
+                </div>
+              ))}
+            </div>
+
+            {/* Predicted Composite Gains & Sign Conflict Resolution */}
+            <div className="grid grid-cols-4 gap-2 font-mono text-xs tabular-nums">
+              <div className="bg-[#0B0F17] border border-slate-800 rounded p-2.5">
+                <div className="text-[10px] text-slate-400">MMLU-Pro Δ</div>
+                <div className="text-emerald-400 font-semibold mt-0.5">
+                  +{multiAdapterPlan.predictedCompositeGains.mmluProDelta}%
+                </div>
+              </div>
+              <div className="bg-[#0B0F17] border border-slate-800 rounded p-2.5">
+                <div className="text-[10px] text-slate-400">HumanEval+ Δ</div>
+                <div className="text-emerald-400 font-semibold mt-0.5">
+                  +{multiAdapterPlan.predictedCompositeGains.humanEvalDelta}%
+                </div>
+              </div>
+              <div className="bg-[#0B0F17] border border-slate-800 rounded p-2.5">
+                <div className="text-[10px] text-slate-400">GSM8K Δ</div>
+                <div className="text-emerald-400 font-semibold mt-0.5">
+                  +{multiAdapterPlan.predictedCompositeGains.gsm8kDelta}%
+                </div>
+              </div>
+              <div className="bg-[#0B0F17] border border-slate-800 rounded p-2.5">
+                <div className="text-[10px] text-slate-400">Sign Resolved</div>
+                <div className="text-blue-400 font-semibold mt-0.5">
+                  {multiAdapterPlan.signConflictsResolvedPct}%
+                </div>
+              </div>
+            </div>
+
+            {/* Mergekit YAML / PEFT Python Script Preview */}
+            <div className="bg-[#0B0F17] border border-slate-800 rounded-lg p-3">
+              <div className="flex items-center justify-between pb-2 border-b border-slate-800">
+                <div className="flex items-center gap-1">
+                  <button
+                    type="button"
+                    onClick={() => setAdapterPreviewTab('yaml')}
+                    className={`px-2 py-0.5 text-[11px] font-mono rounded ${
+                      adapterPreviewTab === 'yaml'
+                        ? 'bg-blue-600 text-white'
+                        : 'text-slate-400 hover:text-slate-200'
+                    }`}
+                  >
+                    mergekit.yaml
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => setAdapterPreviewTab('python')}
+                    className={`px-2 py-0.5 text-[11px] font-mono rounded ${
+                      adapterPreviewTab === 'python'
+                        ? 'bg-blue-600 text-white'
+                        : 'text-slate-400 hover:text-slate-200'
+                    }`}
+                  >
+                    peft_weighted_merge.py
+                  </button>
+                </div>
+                <span className="text-[11px] font-mono text-slate-400">
+                  Density: {mergeDensity} · {multiAdapterPlan.activeAdapterCount} adapters
+                </span>
+              </div>
+              <pre className="mt-2 font-mono text-[11px] text-slate-300 overflow-x-auto max-h-36 whitespace-pre leading-relaxed">
+                {adapterPreviewTab === 'yaml'
+                  ? multiAdapterPlan.mergekitYaml
+                  : multiAdapterPlan.peftMergeScript}
+              </pre>
+            </div>
+          </div>
+
+          <div className="flex flex-wrap items-center justify-between gap-2 pt-3 border-t border-slate-800/80">
+            <span className="text-xs font-mono text-slate-400">
+              Target ID: <strong className="text-slate-200">{multiAdapterPlan.mergedAdapterCheckpointId}</strong>
+            </span>
+            <button
+              type="button"
+              onClick={() =>
+                setCustomMergedCheckpointOverride(multiAdapterPlan.mergedAdapterCheckpointId)
+              }
+              className="inline-flex items-center gap-1.5 px-3.5 py-2 text-xs font-medium text-white bg-blue-600 hover:bg-blue-500 rounded-lg transition-colors"
+            >
+              <GitMerge className="w-3.5 h-3.5" />
+              Bind Merged Adapter to Section 04 Exporter
+            </button>
+          </div>
+        </section>
+
+        {/* Right 6 cols: 1-Click Executable Training Script & Config Bundle Exporter */}
+        <section className="lg:col-span-6 bg-[#111827] border border-slate-800/90 rounded-lg p-5 flex flex-col justify-between space-y-4">
+          <div className="space-y-4">
+            <div className="flex flex-wrap items-center justify-between gap-2 pb-3 border-b border-slate-800/80">
+              <div>
+                <h2 className="text-base font-semibold text-slate-100">
+                  07. 1-Click Executable Training Script &amp; Config Bundle Exporter
+                </h2>
+                <p className="text-xs text-slate-400 mt-0.5">
+                  Ready-to-run Axolotl YAML, Unsloth + TRL Python scripts, Dataset Blend JSON, and Ollama Modelfile
+                </p>
+              </div>
+
+              <button
+                type="button"
+                onClick={() => {
+                  const files: Array<{ name: string; content: string }> = [
+                    { name: 'axolotl_config.yaml', content: executableRunBundle.axolotlConfigYaml },
+                    { name: 'unsloth_train.py', content: executableRunBundle.unslothTrainPy },
+                    { name: 'trl_stage2_orpo.py', content: executableRunBundle.trlSftOrpoPy },
+                    { name: 'dataset_blend.json', content: executableRunBundle.datasetBlendJson },
+                    { name: 'Modelfile', content: executableRunBundle.ollamaModelfile },
+                  ];
+                  const combinedBundle = files
+                    .map((f) => `# ==========================================\n# FILE: ${f.name}\n# ==========================================\n${f.content}`)
+                    .join('\n\n');
+                  const blob = new Blob([combinedBundle], { type: 'text/plain;charset=utf-8' });
+                  const url = URL.createObjectURL(blob);
+                  const a = document.createElement('a');
+                  a.href = url;
+                  a.download = `forgeml-${selectedModel.name.toLowerCase().replace(/[^a-z0-9.-]+/g, '-')}-run-bundle.txt`;
+                  a.click();
+                  URL.revokeObjectURL(url);
+                  setBundleDownloadedBanner(
+                    `Exported 5-file executable training bundle for ${selectedModel.name} (Axolotl + Unsloth + TRL ${alignmentMethod} + Blend + Modelfile)`
+                  );
+                }}
+                className="inline-flex items-center gap-1.5 px-3.5 py-2 text-xs font-medium text-white bg-emerald-600 hover:bg-emerald-500 rounded-lg transition-colors shrink-0"
+              >
+                <Download className="w-3.5 h-3.5" />
+                Download Complete Run Bundle (5 Files)
+              </button>
+            </div>
+
+            {bundleDownloadedBanner && (
+              <div
+                role="status"
+                className="bg-emerald-950/30 border border-emerald-500/40 rounded-lg px-3.5 py-2 text-xs font-mono text-emerald-300"
+              >
+                {bundleDownloadedBanner}
+              </div>
+            )}
+
+            <div className="flex flex-wrap items-center gap-1 bg-[#0B0F17] p-1.5 rounded-lg border border-slate-800">
+              {(
+                [
+                  { id: 'unsloth', label: 'unsloth_train.py' },
+                  { id: 'axolotl', label: 'axolotl_config.yaml' },
+                  { id: 'trl_orpo', label: `trl_${alignmentMethod.toLowerCase()}.py` },
+                  { id: 'blend_json', label: 'dataset_blend.json' },
+                  { id: 'modelfile', label: 'Modelfile' },
+                ] as const
+              ).map((tab) => (
+                <button
+                  key={tab.id}
+                  type="button"
+                  onClick={() => setBundlePreviewTab(tab.id)}
+                  className={`px-2.5 py-1 text-xs font-mono rounded transition-colors ${
+                    bundlePreviewTab === tab.id
+                      ? 'bg-blue-600 text-white font-semibold'
+                      : 'text-slate-400 hover:text-slate-200'
+                  }`}
+                >
+                  {tab.label}
+                </button>
+              ))}
+            </div>
+
+            <div className="bg-[#0B0F17] border border-slate-800 rounded-lg p-3.5">
+              <pre className="font-mono text-[11px] text-slate-200 overflow-x-auto max-h-72 whitespace-pre leading-relaxed">
+                {bundlePreviewTab === 'unsloth'
+                  ? executableRunBundle.unslothTrainPy
+                  : bundlePreviewTab === 'axolotl'
+                  ? executableRunBundle.axolotlConfigYaml
+                  : bundlePreviewTab === 'trl_orpo'
+                  ? executableRunBundle.trlSftOrpoPy
+                  : bundlePreviewTab === 'blend_json'
+                  ? executableRunBundle.datasetBlendJson
+                  : executableRunBundle.ollamaModelfile}
+              </pre>
+            </div>
+          </div>
+
+          <div className="pt-3 border-t border-slate-800/80 flex flex-wrap items-center justify-between gap-2 text-[11px] font-mono text-slate-400">
+            <span>
+              Synced with: {selectedModel.name} · LoRA r={activeHpoConfig.loraRank} α={activeHpoConfig.loraAlpha}
+            </span>
+            <span>
+              Multipack: {samplePackingEnabled ? 'ON' : 'OFF'} · Masking: {completionOnlyLossEnabled ? '-100 Prompt' : 'OFF'}
+            </span>
+          </div>
+        </section>
+      </div>
+
+      {/* Section 08: Saved Experiment Profiles & Run History Diffing (Run Ledger) */}
+      <section className="bg-[#111827] border border-slate-800/90 rounded-lg p-5 space-y-5">
+        <div className="flex flex-col lg:flex-row lg:items-center justify-between gap-4 pb-4 border-b border-slate-800/80">
+          <div>
+            <h2 className="text-base font-semibold text-slate-100 flex items-center gap-2">
+              <GitCompare className="w-4 h-4 text-blue-400" />
+              <span>08. Saved Experiment Profiles &amp; Side-by-Side Run History Diffing</span>
+            </h2>
+            <p className="text-xs text-slate-400 mt-0.5">
+              Persisted to LocalStorage ({experimentSnapshots.length} snapshots) · Snapshot current HPO + Dataset + Stage 2 state, compare runs, or restore configurations in 1 click
+            </p>
+          </div>
+
+          <div className="flex flex-wrap items-center gap-2">
+            <input
+              type="text"
+              aria-label="New experiment snapshot name"
+              placeholder={`e.g. ${selectedModel.name} r=${activeHpoConfig.loraRank} + ${alignmentMethod}`}
+              value={newSnapshotName}
+              onChange={(e) => setNewSnapshotName(e.target.value)}
+              className="bg-[#0B0F17] border border-slate-800 rounded-lg px-3 py-1.5 text-xs text-slate-100 placeholder:text-slate-500 w-64"
+            />
+            <button
+              type="button"
+              onClick={() => {
+                const label =
+                  newSnapshotName.trim() ||
+                  `Run #${experimentSnapshots.length + 1}: ${selectedModel.name} (r=${activeHpoConfig.loraRank}, ${stage2Enabled ? alignmentMethod : 'SFT'})`;
+                const created: ExperimentSnapshot = {
+                  id: `snap-${Date.now()}`,
+                  name: label,
+                  createdAt: new Date().toTimeString().split(' ')[0] + ' UTC',
+                  modelId: selectedModel.id,
+                  modelName: selectedModel.name,
+                  architecture: selectedModel.architecture,
+                  paramsBillions: selectedModel.paramsBillions,
+                  datasetVersionId: activeDatasetCommit.versionId,
+                  hpoConfig: { ...activeHpoConfig },
+                  samplePackingEnabled,
+                  completionOnlyLossEnabled,
+                  stage2Method: stage2Enabled ? alignmentMethod : 'NONE',
+                  finalStep: latestPoint.step,
+                  finalTrainLoss: latestPoint.trainLoss,
+                  finalValLoss: latestPoint.valLoss,
+                  mmluPro:
+                    selectedModel.fineTunedBenchmarks?.mmluPro ??
+                    selectedModel.baseBenchmarks.mmluPro,
+                  humanEval:
+                    selectedModel.fineTunedBenchmarks?.humanEval ??
+                    selectedModel.baseBenchmarks.humanEval,
+                  gsm8k:
+                    selectedModel.fineTunedBenchmarks?.gsm8k ??
+                    selectedModel.baseBenchmarks.gsm8k,
+                  ifEval:
+                    selectedModel.fineTunedBenchmarks?.ifEval ??
+                    selectedModel.baseBenchmarks.ifEval,
+                };
+                setExperimentSnapshots((prev) => [created, ...prev]);
+                setDiffSnapBId(created.id);
+                setNewSnapshotName('');
+                setSnapshotStatusBanner(`Saved snapshot "${created.name}" to LocalStorage.`);
+              }}
+              className="inline-flex items-center gap-1.5 px-3.5 py-1.5 text-xs font-medium text-white bg-blue-600 hover:bg-blue-500 rounded-lg transition-colors"
+            >
+              <Bookmark className="w-3.5 h-3.5" />
+              Save Current Run Snapshot
+            </button>
+          </div>
+        </div>
+
+        {snapshotStatusBanner && (
+          <div
+            role="status"
+            className="bg-blue-950/30 border border-blue-500/40 rounded-lg px-3.5 py-2 text-xs font-mono text-blue-300"
+          >
+            {snapshotStatusBanner}
+          </div>
+        )}
+
+        <div className="grid grid-cols-1 lg:grid-cols-12 gap-6">
+          {/* Left 6 cols: Saved Experiment Snapshot Ledger */}
+          <div className="lg:col-span-6 space-y-2.5">
+            <div className="text-xs font-semibold text-slate-300">
+              Saved Experiment Snapshots (Click Restore to Load Config)
+            </div>
+            <div className="space-y-2 max-h-64 overflow-y-auto pr-1">
+              {experimentSnapshots.map((snap) => (
+                <div
+                  key={snap.id}
+                  className="bg-[#0B0F17] border border-slate-800/90 rounded-lg p-3 flex flex-col sm:flex-row sm:items-center justify-between gap-2"
+                >
+                  <div>
+                    <div className="text-xs font-semibold text-slate-100">{snap.name}</div>
+                    <div className="text-[11px] font-mono text-slate-400 mt-0.5">
+                      {snap.architecture} · r={snap.hpoConfig.loraRank} · lr={snap.hpoConfig.learningRate} · Stage 2: {snap.stage2Method} · Val Loss: {snap.finalValLoss.toFixed(2)}
+                    </div>
+                  </div>
+                  <button
+                    type="button"
+                    onClick={() => {
+                      onSelectModel(snap.modelId);
+                      onUpdateHpoConfig(snap.hpoConfig);
+                      setSamplePackingEnabled(snap.samplePackingEnabled);
+                      setCompletionOnlyLossEnabled(snap.completionOnlyLossEnabled);
+                      if (snap.stage2Method !== 'NONE') {
+                        setStage2Enabled(true);
+                        setAlignmentMethod(snap.stage2Method);
+                      } else {
+                        setStage2Enabled(false);
+                      }
+                      setSnapshotStatusBanner(
+                        `Restored configuration from "${snap.name}" (LoRA r=${snap.hpoConfig.loraRank}, lr=${snap.hpoConfig.learningRate}).`
+                      );
+                    }}
+                    className="px-2.5 py-1 text-xs font-mono font-medium text-slate-200 bg-slate-800 hover:bg-slate-700 border border-slate-700 rounded transition-colors shrink-0"
+                  >
+                    Restore Config
+                  </button>
+                </div>
+              ))}
+            </div>
+          </div>
+
+          {/* Right 6 cols: Side-by-Side Snapshot Diff Viewer */}
+          <div className="lg:col-span-6 bg-[#0B0F17] border border-slate-800/90 rounded-lg p-4 space-y-3">
+            <div className="grid grid-cols-1 sm:grid-cols-2 gap-2.5">
+              <div>
+                <label htmlFor="diff-snap-a" className="block text-[10px] text-slate-400 mb-1">
+                  Baseline Snapshot (A)
+                </label>
+                <select
+                  id="diff-snap-a"
+                  value={diffSnapAId}
+                  onChange={(e) => setDiffSnapAId(e.target.value)}
+                  className="w-full bg-[#111827] border border-slate-800 rounded px-2.5 py-1.5 text-xs font-mono text-slate-200"
+                >
+                  {experimentSnapshots.map((s) => (
+                    <option key={s.id} value={s.id}>
+                      {s.name}
+                    </option>
+                  ))}
+                </select>
+              </div>
+              <div>
+                <label htmlFor="diff-snap-b" className="block text-[10px] text-slate-400 mb-1">
+                  Comparison Snapshot (B)
+                </label>
+                <select
+                  id="diff-snap-b"
+                  value={diffSnapBId}
+                  onChange={(e) => setDiffSnapBId(e.target.value)}
+                  className="w-full bg-[#111827] border border-slate-800 rounded px-2.5 py-1.5 text-xs font-mono text-slate-200"
+                >
+                  {experimentSnapshots.map((s) => (
+                    <option key={s.id} value={s.id}>
+                      {s.name}
+                    </option>
+                  ))}
+                </select>
+              </div>
+            </div>
+
+            <div className="grid grid-cols-4 gap-2 font-mono text-xs tabular-nums pt-1">
+              <div className="bg-[#111827] border border-slate-800 rounded p-2">
+                <div className="text-[10px] text-slate-400">Val Loss Δ</div>
+                <div
+                  className={`font-semibold mt-0.5 ${
+                    snapshotDiff.valLossDelta <= 0 ? 'text-emerald-400' : 'text-red-400'
+                  }`}
+                >
+                  {snapshotDiff.valLossDelta > 0 ? '+' : ''}
+                  {snapshotDiff.valLossDelta}
+                </div>
+              </div>
+              <div className="bg-[#111827] border border-slate-800 rounded p-2">
+                <div className="text-[10px] text-slate-400">MMLU-Pro Δ</div>
+                <div
+                  className={`font-semibold mt-0.5 ${
+                    snapshotDiff.mmluProDelta >= 0 ? 'text-emerald-400' : 'text-red-400'
+                  }`}
+                >
+                  {snapshotDiff.mmluProDelta >= 0 ? '+' : ''}
+                  {snapshotDiff.mmluProDelta}%
+                </div>
+              </div>
+              <div className="bg-[#111827] border border-slate-800 rounded p-2">
+                <div className="text-[10px] text-slate-400">HumanEval Δ</div>
+                <div
+                  className={`font-semibold mt-0.5 ${
+                    snapshotDiff.humanEvalDelta >= 0 ? 'text-emerald-400' : 'text-red-400'
+                  }`}
+                >
+                  {snapshotDiff.humanEvalDelta >= 0 ? '+' : ''}
+                  {snapshotDiff.humanEvalDelta}%
+                </div>
+              </div>
+              <div className="bg-[#111827] border border-slate-800 rounded p-2">
+                <div className="text-[10px] text-slate-400">IFEval Δ</div>
+                <div
+                  className={`font-semibold mt-0.5 ${
+                    snapshotDiff.ifEvalDelta >= 0 ? 'text-emerald-400' : 'text-red-400'
+                  }`}
+                >
+                  {snapshotDiff.ifEvalDelta >= 0 ? '+' : ''}
+                  {snapshotDiff.ifEvalDelta}%
+                </div>
+              </div>
+            </div>
+
+            {snapshotDiff.changedHyperparameters.length > 0 && (
+              <div className="space-y-1 text-[11px] font-mono">
+                <div className="text-slate-400">Parameter Deltas (A → B):</div>
+                {snapshotDiff.changedHyperparameters.map((ch) => (
+                  <div key={ch.param} className="flex justify-between text-slate-300">
+                    <span>{ch.param}:</span>
+                    <span>
+                      <span className="text-slate-400">{ch.valueA}</span> →{' '}
+                      <span className="text-emerald-400 font-semibold">{ch.valueB}</span>
+                    </span>
+                  </div>
+                ))}
+              </div>
+            )}
+
+            <div className="pt-2 border-t border-slate-800/80 text-xs text-emerald-400 font-mono">
+              {snapshotDiff.winnerSummary}
+            </div>
+          </div>
+        </div>
+      </section>
+
       {/* Centralized Logging & Telemetry Framework Stream */}
       <section className="bg-[#111827] border border-slate-800/90 rounded-lg p-5">
         <div className="flex flex-col lg:flex-row lg:items-center justify-between gap-4 pb-4 border-b border-slate-800/80">
           <div>
             <h2 className="text-base font-semibold text-slate-100">
-              05. Centralized Logging & Error-Resilient Telemetry Stream
+              09. Centralized Logging & Error-Resilient Telemetry Stream
             </h2>
             <p className="text-xs text-slate-400 mt-0.5">
               Active sink: {activeLogger.toUpperCase()} · Built-in NaN gradient recovery, OOM micro-batch backoff, and checkpoint verification

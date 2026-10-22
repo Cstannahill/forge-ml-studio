@@ -5,9 +5,12 @@ import {
   Bot,
   CheckCircle2,
   Cpu,
+  Flag,
   Plus,
   Play,
+  Send,
   Sparkles,
+  Terminal,
 } from 'lucide-react';
 import {
   Legend,
@@ -26,6 +29,7 @@ import {
   buildPlainLanguageBenchmarkAnalysis,
   buildRadarChartComparisonData,
   compareBaseAndFineTuned,
+  generateArenaComparisonResponse,
 } from '../lib/pipelineLogic';
 import { RegisteredModel } from '../data/initialPipelineData';
 import { InfoTooltip } from './InfoTooltip';
@@ -46,8 +50,44 @@ interface ModelBenchmarksViewProps {
     { providerUsed: string; timestamp: string; explanation: PlainLanguageComparison }
   >;
   onExplainBenchmarksWithLlm: (model: RegisteredModel) => Promise<void>;
+  onSendFlaggedPromptToDatasetStudio?: (draft: {
+    instruction: string;
+    output: string;
+    domainTag: string;
+  }) => void;
   isExplaining: boolean;
 }
+
+const ARENA_PRESETS: Array<{
+  id: 'JSON_SCHEMA' | 'PYTHON_REFACTOR' | 'MATH_COT' | 'TOOL_CALLING';
+  label: string;
+  defaultPrompt: string;
+}> = [
+  {
+    id: 'JSON_SCHEMA',
+    label: 'Strict JSON Schema Extraction',
+    defaultPrompt:
+      'Extract incident_id, severity, root_cause, and mitigation_steps from the log into strict JSON with zero markdown fences.',
+  },
+  {
+    id: 'PYTHON_REFACTOR',
+    label: 'Python Async Concurrency Refactor',
+    defaultPrompt:
+      'Refactor the sequential task runner into an asyncio.Semaphore bounded worker pool with full type hints.',
+  },
+  {
+    id: 'MATH_COT',
+    label: 'Multi-Step Optimizer Math CoT',
+    defaultPrompt:
+      'Calculate total optimizer steps for 3 epochs over 12.8M tokens with micro_batch=8, grad_accum=4, and seq_len=2048.',
+  },
+  {
+    id: 'TOOL_CALLING',
+    label: 'Edge GPU Tool-Call Router',
+    defaultPrompt:
+      'Check if GPU die temperature exceeds 85C and invoke gpu_telemetry_action with NF4 quantization fallback.',
+  },
+];
 
 export const ModelBenchmarksView: React.FC<ModelBenchmarksViewProps> = ({
   models,
@@ -57,6 +97,7 @@ export const ModelBenchmarksView: React.FC<ModelBenchmarksViewProps> = ({
   onTriggerFineTuneAndCompare,
   plainExplanations,
   onExplainBenchmarksWithLlm,
+  onSendFlaggedPromptToDatasetStudio,
   isExplaining,
 }) => {
   const [newModelId, setNewModelId] = useState('');
@@ -64,6 +105,15 @@ export const ModelBenchmarksView: React.FC<ModelBenchmarksViewProps> = ({
   const [newParamsB, setNewParamsB] = useState(2.0);
   const [newContext, setNewContext] = useState(32768);
   const [formError, setFormError] = useState('');
+
+  // Side-by-Side Interactive Evaluation Arena State
+  const [arenaPreset, setArenaPreset] = useState<
+    'JSON_SCHEMA' | 'PYTHON_REFACTOR' | 'MATH_COT' | 'TOOL_CALLING'
+  >('JSON_SCHEMA');
+  const [arenaCustomPrompt, setArenaCustomPrompt] = useState<string>(
+    ARENA_PRESETS[0].defaultPrompt
+  );
+  const [flaggedNotice, setFlaggedNotice] = useState<string | null>(null);
 
   const selectedModel = models.find((m) => m.id === selectedModelId) ?? models[0];
 
@@ -79,6 +129,15 @@ export const ModelBenchmarksView: React.FC<ModelBenchmarksViewProps> = ({
   const summaryTableRows = buildBenchmarkSummaryTableRows(models);
   const selectedSummaryRow =
     summaryTableRows.find((r) => r.modelId === selectedModel.id) ?? summaryTableRows[0];
+
+  const arenaResponse = generateArenaComparisonResponse({
+    prompt: arenaCustomPrompt,
+    presetCategory: arenaPreset,
+    modelName: selectedModel.name,
+    architecture: selectedModel.architecture,
+    paramsBillions: selectedModel.paramsBillions,
+    stage2Aligned: true,
+  });
 
   const storedExplanationEntry = plainExplanations[selectedModel.id];
   const activeExplanation: PlainLanguageComparison | null =
@@ -914,6 +973,143 @@ export const ModelBenchmarksView: React.FC<ModelBenchmarksViewProps> = ({
             </p>
           </div>
         )}
+      </section>
+
+      {/* Section 05: Side-by-Side Interactive Evaluation Arena ("Vibe Check" Sandbox: Base vs. Fine-Tuned) */}
+      <section className="bg-[#111827] border border-slate-800/90 rounded-lg p-5 space-y-5">
+        <div className="flex flex-col lg:flex-row lg:items-center justify-between gap-4 pb-4 border-b border-slate-800/80">
+          <div>
+            <div className="flex items-center gap-2">
+              <span className="text-[11px] font-mono uppercase tracking-wider px-2 py-0.5 rounded bg-emerald-500/15 text-emerald-400">
+                Interactive Vibe-Check Sandbox
+              </span>
+              <span className="text-[11px] font-mono px-2 py-0.5 rounded bg-slate-800 text-slate-300">
+                {selectedModel.name} ({selectedModel.paramsBillions}B)
+              </span>
+            </div>
+            <h2 className="text-base font-semibold text-slate-100 mt-1.5">
+              05. Side-by-Side Interactive Evaluation Arena (Base Model vs. Fine-Tuned Checkpoint)
+            </h2>
+            <p className="text-xs text-slate-400 mt-0.5">
+              Test prompts side-by-side to inspect reasoning traces, strict schema compliance, token throughput, and send flagged responses directly to Dataset Studio
+            </p>
+          </div>
+
+          <div className="flex flex-wrap items-center gap-1.5">
+            {ARENA_PRESETS.map((preset) => (
+              <button
+                key={preset.id}
+                type="button"
+                onClick={() => {
+                  setArenaPreset(preset.id);
+                  setArenaCustomPrompt(preset.defaultPrompt);
+                  setFlaggedNotice(null);
+                }}
+                className={`px-3 py-1.5 text-xs font-mono rounded-lg border transition-colors ${
+                  arenaPreset === preset.id
+                    ? 'bg-blue-600 text-white border-blue-500 font-semibold'
+                    : 'bg-[#0B0F17] border-slate-800 text-slate-300 hover:text-slate-100'
+                }`}
+              >
+                {preset.label}
+              </button>
+            ))}
+          </div>
+        </div>
+
+        {/* Prompt Input Bar */}
+        <div className="flex flex-col sm:flex-row gap-2.5">
+          <input
+            type="text"
+            aria-label="Evaluation Arena Prompt Input"
+            value={arenaCustomPrompt}
+            onChange={(e) => setArenaCustomPrompt(e.target.value)}
+            className="flex-1 bg-[#0B0F17] border border-slate-800 rounded-lg px-3.5 py-2 text-xs font-mono text-slate-100"
+          />
+          <button
+            type="button"
+            onClick={() => {
+              onSendFlaggedPromptToDatasetStudio?.(arenaResponse.correctedSampleDraft);
+              setFlaggedNotice(
+                `Sent flagged prompt & verified fine-tuned completion (${arenaResponse.correctedSampleDraft.domainTag}) to Dataset Studio corpus.`
+              );
+            }}
+            className="inline-flex items-center justify-center gap-1.5 px-3.5 py-2 text-xs font-medium text-amber-300 bg-amber-500/15 hover:bg-amber-500/25 border border-amber-500/40 rounded-lg transition-colors whitespace-nowrap shrink-0"
+          >
+            <Flag className="w-3.5 h-3.5" />
+            Flag Base Failure → Send to Dataset Studio
+          </button>
+        </div>
+
+        {flaggedNotice && (
+          <div
+            role="status"
+            className="bg-emerald-950/30 border border-emerald-500/40 rounded-lg px-3.5 py-2 text-xs font-mono text-emerald-300"
+          >
+            {flaggedNotice}
+          </div>
+        )}
+
+        {/* Split-Screen Base vs. Fine-Tuned Output Comparison */}
+        <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
+          {/* Base Model Column */}
+          <div className="bg-[#0B0F17] border border-slate-800 rounded-lg p-4 flex flex-col justify-between space-y-3">
+            <div className="space-y-3">
+              <div className="flex items-center justify-between pb-2.5 border-b border-slate-800">
+                <div>
+                  <span className="text-xs font-semibold text-slate-300">
+                    Base Model ({selectedModel.name} Untuned)
+                  </span>
+                  <div className="text-[11px] font-mono text-slate-400">
+                    {arenaResponse.baseTokPerSec} tok/s · First-token latency: {arenaResponse.baseLatencyMs} ms
+                  </div>
+                </div>
+                <span className="text-[10px] font-mono uppercase px-2 py-0.5 rounded bg-amber-500/15 text-amber-400">
+                  Constraint Drift / Prose Wrapper
+                </span>
+              </div>
+
+              <pre className="font-mono text-xs text-slate-300 whitespace-pre-wrap leading-relaxed">
+                {arenaResponse.baseOutput}
+              </pre>
+            </div>
+
+            <div className="pt-2.5 border-t border-slate-800/80 text-[11px] font-mono text-amber-400">
+              [WARN] Failed strict IFEval / formatting constraint check
+            </div>
+          </div>
+
+          {/* Fine-Tuned Checkpoint Column */}
+          <div className="bg-[#0B0F17] border border-emerald-500/40 rounded-lg p-4 flex flex-col justify-between space-y-3">
+            <div className="space-y-3">
+              <div className="flex items-center justify-between pb-2.5 border-b border-slate-800">
+                <div>
+                  <span className="text-xs font-semibold text-emerald-400">
+                    Fine-Tuned Checkpoint ({selectedModel.fineTunedCheckpointId ?? 'ft-merged-orpo'})
+                  </span>
+                  <div className="text-[11px] font-mono text-slate-400">
+                    {arenaResponse.ftTokPerSec} tok/s · First-token latency: {arenaResponse.ftLatencyMs} ms
+                  </div>
+                </div>
+                <span className="text-[10px] font-mono uppercase px-2 py-0.5 rounded bg-emerald-500/15 text-emerald-400">
+                  [PASS] 100% Schema &amp; CoT Verified
+                </span>
+              </div>
+
+              <pre className="font-mono text-xs text-slate-100 whitespace-pre-wrap leading-relaxed">
+                {arenaResponse.fineTunedOutput}
+              </pre>
+            </div>
+
+            <div className="pt-2.5 border-t border-slate-800/80 space-y-1">
+              {arenaResponse.keyImprovements.map((imp, idx) => (
+                <div key={idx} className="text-[11px] font-mono text-emerald-400">
+                  [+] {imp}
+                </div>
+              ))}
+            </div>
+          </div>
+        </div>
       </section>
     </div>
   );

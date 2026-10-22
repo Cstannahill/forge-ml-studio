@@ -221,5 +221,66 @@ export const ML_GLOSSARY: Record<string, GlossaryTermEntry> = {
       'Eliminates near-duplicate prompts that cause small models to overfit and repeat phrases verbatim, while preventing accidental memorization of emails, keys, or SSNs.',
     idealDirection: '0 PII leaks · 0 near-duplicate collisions',
   },
+  orpoAlignment: {
+    key: 'orpoAlignment',
+    term: 'Stage 2 Preference Alignment (ORPO / SimPO / DPO / KTO)',
+    category: 'HYPERPARAMETER',
+    whatItIs:
+      'Post-SFT preference optimization using Chosen vs. Rejected response pairs. ORPO (Odds Ratio) and SimPO optimize preference margins directly without loading a frozen reference model.',
+    whatItTellsUs:
+      'Dramatically improves IFEval constraint compliance, MT-Bench multi-turn coherence, and reasoning faithfulness in sub-2B models while saving ~45% VRAM with reference-free ORPO/SimPO.',
+    idealDirection: 'ORPO (beta=0.1) or SimPO (gamma=0.5) for sub-2B models',
+  },
+  teacherDistillation: {
+    key: 'teacherDistillation',
+    term: 'On-Policy Teacher Distillation & LLM-as-a-Judge Rubric',
+    category: 'METRIC',
+    whatItIs:
+      'Generates synthetic <think>...</think> reasoning chains and verified answers from a frontier teacher LLM, filtered by a multi-axis Judge Rubric (Faithfulness, Formatting, Conciseness).',
+    whatItTellsUs:
+      'Sub-2B models (0.3B–2.6B) learn 3–4x faster from clean, dense teacher traces than noisy web scrapes; rubric filtering drops hallucinated or verbose synthetic rows before training.',
+    idealDirection: 'Judge Rubric Score >= 8.5 / 10',
+  },
+  adapterMerging: {
+    key: 'adapterMerging',
+    term: 'Multi-Adapter Task Arithmetic (DARE-TIES / TIES / SLERP)',
+    category: 'ARCHITECTURE',
+    whatItIs:
+      'Combines multiple task-specialized LoRA adapters (e.g., Code + Math + Tool-Calling) via Drop-And-REscale sign-consensus (DARE-TIES) or Spherical Linear Interpolation (SLERP).',
+    whatItTellsUs:
+      'Prevents multi-task gradient interference in small models by training focused adapters separately and merging their delta weights with sign-conflict resolution.',
+    idealDirection: 'DARE-TIES (density 0.75–0.85) for 3+ adapters; SLERP for 2 adapters',
+  },
+  ifdPruning: {
+    key: 'ifdPruning',
+    term: 'IFD Perplexity Pruning & 13-Gram Benchmark Decontamination',
+    category: 'METRIC',
+    whatItIs:
+      'Instruction Following Difficulty (IFD) scores conditioned vs. unconditioned perplexity per sample, paired with 13-gram overlap scanning against MMLU-Pro, GSM8K, and HumanEval+.',
+    whatItTellsUs:
+      'Applies the LIMA Less-Is-More principle: dropping corrupted high-PPL outliers (IFD > 1.05) and trivial rows (IFD < 0.15) boosts sub-2B generalization while preventing test set leakage.',
+    idealDirection: 'Retain IFD 0.20–0.92 · 0% benchmark overlap',
+  },
+  sequencePacking: {
+    key: 'sequencePacking',
+    term: 'FlashAttention Multipack & Completion-Only Loss Masking',
+    category: 'HYPERPARAMETER',
+    whatItIs:
+      'Concatenates multiple variable-length examples into a single context window with block-diagonal attention masks, while setting loss labels to -100 on all user prompt tokens.',
+    whatItTellsUs:
+      'Eliminates up to 68% <pad> token compute waste and ensures 100% of gradient updates optimize assistant responses rather than memorizing user prompts.',
+    idealDirection: 'Multipack ON + Completion-Only Masking ON (+2.5–3.8% sub-2B accuracy)',
+  },
+  earlyStopping: {
+    key: 'earlyStopping',
+    term: 'Validation Loss Patience Watchdog & Best Checkpoint Rollback',
+    category: 'METRIC',
+    whatItIs:
+      'Monitors held-out validation loss after every evaluation step, automatically snapshotting the lowest-val-loss checkpoint and halting if val loss fails to improve for N patience steps.',
+    whatItTellsUs:
+      'Prevents late-epoch overfitting (common in 0.8B–2B models around Epoch 2.0+) and guarantees your exported Safetensors/GGUF checkpoint comes from the peak generalization step.',
+    idealDirection: 'Patience = 2–3 eval steps · Min Delta = 0.005',
+  },
 };
+
 

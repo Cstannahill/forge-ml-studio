@@ -18,6 +18,16 @@ import {
   serializeTrainingSeriesMap,
   deserializeTrainingSeriesMap,
   buildBenchmarkSummaryTableRows,
+  computePreferenceAlignmentPlan,
+  computePackingAndMaskingMetrics,
+  computeMultiAdapterMergePlan,
+  evaluateEarlyStoppingWatchdog,
+  generateExecutableRunBundle,
+  scoreAndPruneDatasetByIfdAndDecontamination,
+  generateSyntheticDistillationBatch,
+  computeTokenLengthHistogramAndTruncation,
+  generateArenaComparisonResponse,
+  diffExperimentSnapshots,
 } from './pipelineLogic.ts';
 import { CURATED_DATASET_BLENDS } from '../data/curatedDatasetBlends.ts';
 import { ML_GLOSSARY } from './glossaryData.ts';
@@ -589,3 +599,218 @@ test('buildBenchmarkSummaryTableRows computes base vs fine-tuned MMLU-Pro and Hu
   assert.equal(rows[0].humanEvalDelta, 7.9);
   assert.equal(rows[0].verdict, 'PROMOTE_TO_PRODUCTION');
 });
+
+test('computePreferenceAlignmentPlan calculates reference-free VRAM savings for ORPO/SimPO vs DPO/KTO', () => {
+  const orpo = computePreferenceAlignmentPlan({
+    method: 'ORPO',
+    beta: 0.1,
+    preferenceDataset: 'argilla/ultrafeedback-binarized-preferences-cleaned',
+    paramsBillions: 2.0,
+    baseIfEval: 73.5,
+    baseMtBench: 7.82,
+  });
+  const dpo = computePreferenceAlignmentPlan({
+    method: 'DPO',
+    beta: 0.1,
+    preferenceDataset: 'argilla/ultrafeedback-binarized-preferences-cleaned',
+    paramsBillions: 2.0,
+    baseIfEval: 73.5,
+    baseMtBench: 7.82,
+  });
+
+  assert.equal(orpo.requiresReferenceModel, false);
+  assert.equal(orpo.vramSavingsPct, 44);
+  assert.equal(dpo.requiresReferenceModel, true);
+  assert.ok(orpo.estimatedVramGb < dpo.estimatedVramGb);
+  assert.ok(orpo.projectedIfEvalGain > 3.0);
+});
+
+test('computePackingAndMaskingMetrics computes padding waste reduction and sub-2B accuracy lift', () => {
+  const packed = computePackingAndMaskingMetrics({
+    samplePackingEnabled: true,
+    completionOnlyLossEnabled: true,
+    maxSeqLength: 4096,
+    avgSampleTokens: 1200,
+    baseTokensPerSec: 9500,
+  });
+  const unpacked = computePackingAndMaskingMetrics({
+    samplePackingEnabled: false,
+    completionOnlyLossEnabled: false,
+    maxSeqLength: 4096,
+    avgSampleTokens: 1200,
+    baseTokensPerSec: 9500,
+  });
+
+  assert.ok(packed.paddingWastePct < unpacked.paddingWastePct);
+  assert.ok(packed.effectiveThroughputTokSec > unpacked.effectiveThroughputTokSec);
+  assert.equal(packed.estimatedSub2bAccuracyGainPct, 3.3);
+});
+
+test('computeMultiAdapterMergePlan normalizes adapter weights and generates mergekit YAML and PEFT scripts', () => {
+  const mergePlan = computeMultiAdapterMergePlan({
+    adapters: [
+      { id: 'code-r32', name: 'Code Adapter', domain: 'CODING', weight: 0.6, loraRank: 32, enabled: true },
+      { id: 'math-r32', name: 'Math Adapter', domain: 'REASONING_MATH', weight: 0.4, loraRank: 32, enabled: true },
+    ],
+    algorithm: 'DARE-TIES',
+    density: 0.8,
+    baseModelId: 'Qwen/Qwen3.5-2B-Instruct',
+    architecture: 'Qwen3.5',
+  });
+
+  assert.equal(mergePlan.activeAdapterCount, 2);
+  assert.equal(mergePlan.normalizedWeights[0].normalizedWeight, 0.6);
+  assert.equal(mergePlan.normalizedWeights[1].normalizedWeight, 0.4);
+  assert.ok(mergePlan.mergekitYaml.includes('dare_ties'));
+  assert.ok(mergePlan.peftMergeScript.includes('add_weighted_adapter'));
+});
+
+test('evaluateEarlyStoppingWatchdog detects overfitting divergence and identifies best checkpoint', () => {
+  const report = evaluateEarlyStoppingWatchdog({
+    trainingSeries: [
+      { step: 100, epoch: 0.5, trainLoss: 1.4, valLoss: 1.45, gradNorm: 1.1, learningRate: 0.0002, tokensPerSec: 9500 },
+      { step: 150, epoch: 0.75, trainLoss: 0.92, valLoss: 0.96, gradNorm: 0.8, learningRate: 0.0002, tokensPerSec: 9600 },
+      { step: 200, epoch: 1.0, trainLoss: 0.74, valLoss: 1.12, gradNorm: 1.2, learningRate: 0.0002, tokensPerSec: 9600 },
+    ],
+    patienceSteps: 1,
+    minDelta: 0.005,
+  });
+
+  assert.equal(report.bestCheckpoint.step, 150);
+  assert.equal(report.bestIndex, 1);
+  assert.equal(report.shouldTriggerEarlyStop, true);
+  assert.equal(report.statusLabel, 'EARLY_STOP_TRIGGERED');
+});
+
+test('generateExecutableRunBundle outputs Axolotl YAML, Unsloth Python, TRL ORPO script, Blend JSON, and Modelfile', () => {
+  const bundle = generateExecutableRunBundle({
+    modelId: 'Qwen/Qwen3.5-2B-Instruct',
+    modelName: 'Qwen3.5-2B-Instruct',
+    architecture: 'Qwen3.5',
+    paramsBillions: 2.0,
+    contextWindow: 32768,
+    hpoConfig: {
+      learningRate: 0.0002,
+      loraRank: 32,
+      loraAlpha: 64,
+      loraDropout: 0.05,
+      warmupRatio: 0.05,
+      weightDecay: 0.01,
+      neftuneAlpha: 5,
+      batchSize: 8,
+      lrScheduler: 'wsd',
+    },
+    datasetSources: ['Qwen/Qwen3-Code-Reasoning-110k'],
+    targetFormat: 'chatml',
+    samplePackingEnabled: true,
+    completionOnlyLossEnabled: true,
+    alignmentStage: {
+      enabled: true,
+      method: 'ORPO',
+      beta: 0.1,
+      preferenceDataset: 'argilla/ultrafeedback-binarized-preferences-cleaned',
+    },
+  });
+
+  assert.ok(bundle.axolotlConfigYaml.includes('sample_packing: true'));
+  assert.ok(bundle.axolotlConfigYaml.includes('train_on_inputs: false'));
+  assert.ok(bundle.unslothTrainPy.includes('FastLanguageModel.get_peft_model'));
+  assert.ok(bundle.trlSftOrpoPy.includes('ORPOTrainer'));
+  assert.ok(bundle.ollamaModelfile.includes('FROM ./qwen3.5-2b-instruct-merged.safetensors'));
+});
+
+test('generateSyntheticDistillationBatch, scoreAndPruneDatasetByIfdAndDecontamination, and computeTokenLengthHistogramAndTruncation work end-to-end', () => {
+  const distilled = generateSyntheticDistillationBatch({
+    seedPrompt: 'Implement a thread-safe LRU cache in Python',
+    domainTag: 'code-python',
+    teacherModel: 'gemini-3-flash-preview',
+    minRubricScore: 8.5,
+    targetFormat: 'chatml',
+  });
+
+  assert.equal(distilled.length, 3);
+  const passing = distilled.filter((d) => d.passedRubric);
+  assert.equal(passing.length, 2);
+
+  const samples = distilled.map((d) => d.normalizedSample);
+  const pruned = scoreAndPruneDatasetByIfdAndDecontamination({
+    samples,
+    minIfd: 0.2,
+    maxIfd: 0.95,
+    enableDecontamination: true,
+  });
+  assert.ok(pruned.meanIfdScore > 0);
+  assert.equal(pruned.benchmarkDecontaminationSummary.length, 4);
+
+  const hist = computeTokenLengthHistogramAndTruncation({
+    samples,
+    contextCutoffTokens: 64,
+  });
+  assert.equal(hist.buckets.length, 5);
+  assert.ok(hist.maxSampleTokens > 0);
+});
+
+test('generateArenaComparisonResponse and diffExperimentSnapshots produce accurate side-by-side comparisons', () => {
+  const arena = generateArenaComparisonResponse({
+    prompt: 'Extract strict JSON',
+    presetCategory: 'JSON_SCHEMA',
+    modelName: 'Qwen3.5-2B-Instruct',
+    architecture: 'Qwen3.5',
+    paramsBillions: 2.0,
+    stage2Aligned: true,
+  });
+  assert.equal(arena.constraintPassedBase, false);
+  assert.equal(arena.constraintPassedFineTuned, true);
+  assert.ok(arena.fineTunedOutput.includes('<think>'));
+
+  const snapA = {
+    id: 'a',
+    name: 'Run A',
+    createdAt: '2026-10-20',
+    modelId: 'Qwen/Qwen3.5-2B-Instruct',
+    modelName: 'Qwen3.5-2B-Instruct',
+    architecture: 'Qwen3.5' as const,
+    paramsBillions: 2.0,
+    datasetVersionId: 'v2.3.0',
+    hpoConfig: {
+      learningRate: 0.00015,
+      loraRank: 16,
+      loraAlpha: 32,
+      loraDropout: 0.05,
+      warmupRatio: 0.05,
+      weightDecay: 0.01,
+      neftuneAlpha: 0,
+      batchSize: 4,
+      lrScheduler: 'cosine' as const,
+    },
+    samplePackingEnabled: false,
+    completionOnlyLossEnabled: false,
+    stage2Method: 'NONE' as const,
+    finalStep: 300,
+    finalTrainLoss: 0.95,
+    finalValLoss: 1.05,
+    mmluPro: 62.0,
+    humanEval: 73.0,
+    gsm8k: 78.0,
+    ifEval: 75.0,
+  };
+  const snapB = {
+    ...snapA,
+    id: 'b',
+    name: 'Run B',
+    hpoConfig: { ...snapA.hpoConfig, loraRank: 32, loraAlpha: 64 },
+    samplePackingEnabled: true,
+    stage2Method: 'ORPO' as const,
+    finalValLoss: 0.88,
+    mmluPro: 65.8,
+    humanEval: 79.1,
+    gsm8k: 83.4,
+    ifEval: 81.2,
+  };
+
+  const diff = diffExperimentSnapshots(snapA, snapB);
+  assert.equal(diff.mmluProDelta, 3.8);
+  assert.equal(diff.humanEvalDelta, 6.1);
+  assert.ok(diff.changedHyperparameters.length >= 3);
+});
+

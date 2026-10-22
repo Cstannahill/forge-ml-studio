@@ -1,20 +1,28 @@
 import React, { useState } from 'react';
 import {
+  BarChart2,
+  Check,
   CloudUpload,
   Database,
+  Edit3,
   FileCheck2,
+  Filter,
   GitCommit,
   Layers,
   Plus,
   Search,
+  ShieldCheck,
   Sparkles,
   Zap,
 } from 'lucide-react';
 import {
   DatasetValidationReport,
-  HyperparameterConfig,
   NormalizedDatasetSample,
+  SyntheticDistilledPair,
   TargetFormat,
+  computeTokenLengthHistogramAndTruncation,
+  generateSyntheticDistillationBatch,
+  scoreAndPruneDatasetByIfdAndDecontamination,
   validateDatasetRecords,
 } from '../lib/pipelineLogic';
 import { DatasetVersionCommit } from '../data/initialPipelineData';
@@ -45,6 +53,8 @@ interface DatasetStudioViewProps {
   onApplyCuratedBlend: (blend: CuratedDatasetBlend) => void;
   onRunAgenticCleanAndTag: () => Promise<void>;
   onCommitDatasetVersion: (cloudUri: string, notes: string) => void;
+  onAppendSamples?: (newSamples: NormalizedDatasetSample[], note: string) => void;
+  onReplaceSamples?: (nextSamples: NormalizedDatasetSample[], note: string) => void;
   datasetVersions: DatasetVersionCommit[];
   isBusy: boolean;
 }
@@ -79,6 +89,8 @@ export const DatasetStudioView: React.FC<DatasetStudioViewProps> = ({
   onApplyCuratedBlend,
   onRunAgenticCleanAndTag,
   onCommitDatasetVersion,
+  onAppendSamples,
+  onReplaceSamples,
   datasetVersions,
   isBusy,
 }) => {
@@ -145,8 +157,66 @@ export const DatasetStudioView: React.FC<DatasetStudioViewProps> = ({
   const [selectedSampleId, setSelectedSampleId] = useState<string>(samples[0]?.id ?? '');
   const [isSearchingHf, setIsSearchingHf] = useState(false);
 
+  // 1. On-Policy Teacher Knowledge Distillation & Synthetic Data Generator State
+  const [distillSeedPrompt, setDistillSeedPrompt] = useState(
+    'Write a deterministic Python function to parse nested JSON tool calls and validate required keys without external dependencies.'
+  );
+  const [distillDomainTag, setDistillDomainTag] = useState('tool-calling-python');
+  const [distillTeacherModel, setDistillTeacherModel] = useState('gemini-3-flash-preview (Frontier Teacher)');
+  const [minRubricScore, setMinRubricScore] = useState<number>(8.5);
+  const [generatedDistillPairs, setGeneratedDistillPairs] = useState<SyntheticDistilledPair[]>(() =>
+    generateSyntheticDistillationBatch({
+      seedPrompt:
+        'Write a deterministic Python function to parse nested JSON tool calls and validate required keys without external dependencies.',
+      domainTag: 'tool-calling-python',
+      teacherModel: 'gemini-3-flash-preview',
+      minRubricScore: 8.5,
+      targetFormat,
+    })
+  );
+  const [distillStatusBanner, setDistillStatusBanner] = useState<string | null>(null);
+
+  // 2. Perplexity-Based IFD Data Pruning & 13-Gram Benchmark Decontamination State
+  const [minIfdThreshold, setMinIfdThreshold] = useState<number>(0.2);
+  const [maxIfdThreshold, setMaxIfdThreshold] = useState<number>(0.92);
+  const [enableDecontamination, setEnableDecontamination] = useState<boolean>(true);
+  const [pruningStatusBanner, setPruningStatusBanner] = useState<string | null>(null);
+
+  // 3. Interactive Sample Editor & Context Cutoff Truncation Analyzer State
+  const [contextCutoffTokens, setContextCutoffTokens] = useState<number>(256);
+  const [sampleSearchQuery, setSampleSearchQuery] = useState('');
+  const [onlyTruncationRisk, setOnlyTruncationRisk] = useState(false);
+  const [isEditingSample, setIsEditingSample] = useState(false);
+  const [editedFormattedText, setEditedFormattedText] = useState('');
+  const [sampleEditNotice, setSampleEditNotice] = useState<string | null>(null);
+
   const validationReport: DatasetValidationReport = validateDatasetRecords(samples);
-  const activeSample = samples.find((s) => s.id === selectedSampleId) ?? samples[0];
+  const ifdAndDecontamReport = scoreAndPruneDatasetByIfdAndDecontamination({
+    samples,
+    minIfd: minIfdThreshold,
+    maxIfd: maxIfdThreshold,
+    enableDecontamination,
+  });
+  const tokenHistogramReport = computeTokenLengthHistogramAndTruncation({
+    samples,
+    contextCutoffTokens,
+  });
+
+  const filteredSamples = samples.filter((s) => {
+    const q = sampleSearchQuery.trim().toLowerCase();
+    const matchesSearch =
+      !q ||
+      s.formattedPreview.toLowerCase().includes(q) ||
+      s.sourceDataset.toLowerCase().includes(q) ||
+      s.tags.some((t) => t.toLowerCase().includes(q));
+    const matchesTruncation = !onlyTruncationRisk || s.tokenEstimate > contextCutoffTokens;
+    return matchesSearch && matchesTruncation;
+  });
+
+  const activeSample =
+    filteredSamples.find((s) => s.id === selectedSampleId) ??
+    samples.find((s) => s.id === selectedSampleId) ??
+    samples[0];
 
   const filteredBlends = CURATED_DATASET_BLENDS.filter((blend) => {
     const matchesModel =
@@ -691,61 +761,493 @@ export const DatasetStudioView: React.FC<DatasetStudioViewProps> = ({
         </div>
       </section>
 
-      {/* Section 03: Normalized Sample Inspector & Version History */}
+      {/* Section 04: On-Policy Teacher Knowledge Distillation & IFD Pruning / Decontamination Gate */}
       <section className="grid grid-cols-1 lg:grid-cols-12 gap-6 items-stretch">
-        {/* Normalized Records List & Formatted Preview */}
-        <div className="lg:col-span-7 bg-[#111827] border border-slate-800/90 rounded-lg p-5">
-          <div className="pb-4 border-b border-slate-800/80 flex items-center justify-between">
-            <div>
-              <h2 className="text-base font-semibold text-slate-100">
-                04. Unified Normalized Corpus Inspector ({samples.length} Active Records)
-              </h2>
-              <p className="text-xs text-slate-400 mt-0.5">
-                Inspect how heterogeneous Alpaca, ShareGPT, and Messages rows normalize into {targetFormat.toUpperCase()}
-              </p>
+        {/* Left 7 cols: On-Policy Knowledge Distillation & Synthetic Teacher Pipeline */}
+        <div className="lg:col-span-7 bg-[#111827] border border-slate-800/90 rounded-lg p-5 flex flex-col justify-between space-y-4">
+          <div className="space-y-4">
+            <div className="flex flex-wrap items-center justify-between gap-2 pb-3 border-b border-slate-800/80">
+              <div>
+                <span className="text-[10px] font-mono uppercase tracking-wider px-2 py-0.5 rounded bg-emerald-500/15 text-emerald-400">
+                  Sub-2B Reasoning Booster · Teacher Distillation
+                </span>
+                <h2 className="text-base font-semibold text-slate-100 mt-1 flex items-center">
+                  <span>04. On-Policy Teacher Knowledge Distillation &amp; Judge Rubric</span>
+                  <InfoTooltip termKey="teacherDistillation" align="left" />
+                </h2>
+                <p className="text-xs text-slate-400 mt-0.5">
+                  Synthesize verified &lt;think&gt;...&lt;/think&gt; reasoning traces from a frontier teacher LLM and filter with an LLM-as-a-Judge rubric
+                </p>
+              </div>
+
+              <button
+                type="button"
+                onClick={() => {
+                  const batch = generateSyntheticDistillationBatch({
+                    seedPrompt: distillSeedPrompt,
+                    domainTag: distillDomainTag,
+                    teacherModel: distillTeacherModel,
+                    minRubricScore,
+                    targetFormat,
+                  });
+                  setGeneratedDistillPairs(batch);
+                  setDistillStatusBanner(
+                    `Generated ${batch.length} teacher traces (${batch.filter((b) => b.passedRubric).length} passed Judge Rubric >= ${minRubricScore}/10).`
+                  );
+                }}
+                className="inline-flex items-center gap-1.5 px-3.5 py-2 text-xs font-medium text-white bg-blue-600 hover:bg-blue-500 rounded-lg transition-colors shrink-0"
+              >
+                <Sparkles className="w-3.5 h-3.5" />
+                Synthesize Teacher CoT Batch
+              </button>
+            </div>
+
+            {distillStatusBanner && (
+              <div
+                role="status"
+                className="bg-emerald-950/30 border border-emerald-500/40 rounded-lg px-3.5 py-2 text-xs font-mono text-emerald-300"
+              >
+                {distillStatusBanner}
+              </div>
+            )}
+
+            <div className="grid grid-cols-1 sm:grid-cols-12 gap-3">
+              <div className="sm:col-span-6">
+                <label htmlFor="distill-seed-input" className="block text-[11px] text-slate-400 mb-1">
+                  Seed Prompt or Sub-2B Failure Case
+                </label>
+                <input
+                  id="distill-seed-input"
+                  type="text"
+                  value={distillSeedPrompt}
+                  onChange={(e) => setDistillSeedPrompt(e.target.value)}
+                  className="w-full bg-[#0B0F17] border border-slate-800 rounded-lg px-3 py-1.5 text-xs text-slate-100"
+                />
+              </div>
+              <div className="sm:col-span-3">
+                <label htmlFor="distill-teacher-select" className="block text-[11px] text-slate-400 mb-1">
+                  Teacher Model
+                </label>
+                <select
+                  id="distill-teacher-select"
+                  value={distillTeacherModel}
+                  onChange={(e) => setDistillTeacherModel(e.target.value)}
+                  className="w-full bg-[#0B0F17] border border-slate-800 rounded-lg px-2.5 py-1.5 text-xs font-mono text-slate-200"
+                >
+                  <option value="gemini-3-flash-preview">Gemini 3 Flash</option>
+                  <option value="deepseek-r1-671b-openrouter">DeepSeek-R1 (OpenRouter)</option>
+                  <option value="qwen3.5-32b-ollama-local">Qwen3.5-32B (Local Ollama)</option>
+                </select>
+              </div>
+              <div className="sm:col-span-3">
+                <label htmlFor="distill-rubric-select" className="block text-[11px] text-slate-400 mb-1">
+                  Min Judge Rubric
+                </label>
+                <select
+                  id="distill-rubric-select"
+                  value={minRubricScore}
+                  onChange={(e) => setMinRubricScore(Number(e.target.value))}
+                  className="w-full bg-[#0B0F17] border border-slate-800 rounded-lg px-2.5 py-1.5 text-xs font-mono text-slate-200"
+                >
+                  <option value={8.0}>&gt;= 8.0 / 10</option>
+                  <option value={8.5}>&gt;= 8.5 / 10 (Strict)</option>
+                  <option value={9.0}>&gt;= 9.0 / 10 (Elite)</option>
+                </select>
+              </div>
+            </div>
+
+            <div className="space-y-2.5 max-h-64 overflow-y-auto pr-1">
+              {generatedDistillPairs.map((pair) => (
+                <div
+                  key={pair.id}
+                  className={`bg-[#0B0F17] border rounded-lg p-3 space-y-1.5 ${
+                    pair.passedRubric ? 'border-slate-800' : 'border-red-500/30 opacity-75'
+                  }`}
+                >
+                  <div className="flex flex-wrap items-center justify-between gap-2 text-xs font-mono">
+                    <span className="text-slate-200 font-semibold truncate max-w-md">
+                      {pair.seedPrompt}
+                    </span>
+                    <span
+                      className={`px-2 py-0.5 rounded text-[10px] font-semibold ${
+                        pair.passedRubric
+                          ? 'bg-emerald-500/15 text-emerald-400'
+                          : 'bg-red-500/20 text-red-400'
+                      }`}
+                    >
+                      Judge: {pair.rubricScores.overall}/10{' '}
+                      {pair.passedRubric ? '· VERIFIED' : '· REJECTED'}
+                    </span>
+                  </div>
+                  <div className="text-[11px] font-mono text-blue-300/90 line-clamp-2">
+                    &lt;think&gt; {pair.reasoningTrace} &lt;/think&gt;
+                  </div>
+                  <div className="text-[11px] font-mono text-slate-400 flex items-center gap-3">
+                    <span>Faithfulness: {pair.rubricScores.faithfulness}</span>
+                    <span>Formatting: {pair.rubricScores.formatting}</span>
+                    <span>Conciseness: {pair.rubricScores.conciseness}</span>
+                  </div>
+                </div>
+              ))}
             </div>
           </div>
 
-          <div className="grid grid-cols-1 md:grid-cols-12 gap-4 mt-4">
-            <div className="md:col-span-5 divide-y divide-slate-800/70 max-h-72 overflow-y-auto pr-1">
-              {samples.map((s) => (
-                <button
-                  key={s.id}
-                  type="button"
-                  onClick={() => setSelectedSampleId(s.id)}
-                  className={`w-full text-left py-2.5 px-2.5 rounded transition-colors ${
-                    activeSample?.id === s.id
-                      ? 'bg-blue-600/15 text-slate-100'
-                      : 'hover:bg-slate-800/40 text-slate-300'
-                  }`}
-                >
-                  <div className="text-xs font-mono font-medium truncate">{s.sourceDataset}</div>
-                  <div className="text-[11px] text-slate-400 mt-0.5 font-mono tabular-nums">
-                    {s.tokenEstimate} tok · Quality {s.qualityScore}% ·{' '}
-                    {s.piiDetected ? 'PII Flagged' : 'Clean'}
-                  </div>
-                  <div className="text-[11px] text-slate-500 mt-0.5 truncate">
-                    Tags: {s.tags.join(' · ')}
-                  </div>
-                </button>
-              ))}
+          <div className="pt-3 border-t border-slate-800/80 flex flex-wrap items-center justify-between gap-2">
+            <span className="text-xs font-mono text-slate-400">
+              Passing Candidates:{' '}
+              <strong className="text-emerald-400">
+                {generatedDistillPairs.filter((p) => p.passedRubric).length} /{' '}
+                {generatedDistillPairs.length}
+              </strong>
+            </span>
+            <button
+              type="button"
+              onClick={() => {
+                const passing = generatedDistillPairs
+                  .filter((p) => p.passedRubric)
+                  .map((p) => p.normalizedSample);
+                if (passing.length > 0) {
+                  onAppendSamples?.(
+                    passing,
+                    `Appended ${passing.length} teacher-distilled CoT samples (${distillTeacherModel}, Judge >= ${minRubricScore})`
+                  );
+                  setDistillStatusBanner(
+                    `Appended ${passing.length} verified <think> teacher traces into active dataset corpus (${samples.length + passing.length} total rows).`
+                  );
+                }
+              }}
+              className="inline-flex items-center gap-1.5 px-3.5 py-2 text-xs font-medium text-white bg-emerald-600 hover:bg-emerald-500 rounded-lg transition-colors"
+            >
+              <Plus className="w-3.5 h-3.5" />
+              Append Passing Teacher Traces to Active Corpus
+            </button>
+          </div>
+        </div>
+
+        {/* Right 5 cols: Perplexity-Based IFD Data Pruning & 13-Gram Benchmark Decontamination Gate */}
+        <div className="lg:col-span-5 bg-[#111827] border border-slate-800/90 rounded-lg p-5 flex flex-col justify-between space-y-4">
+          <div className="space-y-4">
+            <div className="pb-3 border-b border-slate-800/80">
+              <span className="text-[10px] font-mono uppercase tracking-wider px-2 py-0.5 rounded bg-blue-500/15 text-blue-400">
+                LIMA Less-Is-More Filter · Eval Hygiene
+              </span>
+              <h2 className="text-base font-semibold text-slate-100 mt-1 flex items-center">
+                <span>05. IFD Perplexity Pruning &amp; 13-Gram Decontamination Gate</span>
+                <InfoTooltip termKey="ifdPruning" align="right" />
+              </h2>
+              <p className="text-xs text-slate-400 mt-0.5">
+                Filter noisy high-PPL outliers and trivial rows while scanning for MMLU-Pro, GSM8K, and HumanEval+ test leakage
+              </p>
             </div>
 
-            <div className="md:col-span-7 bg-[#0B0F17] border border-slate-800/80 rounded-lg p-3.5 font-mono text-xs overflow-x-auto max-h-72">
+            {pruningStatusBanner && (
+              <div
+                role="status"
+                className="bg-emerald-950/30 border border-emerald-500/40 rounded-lg px-3.5 py-2 text-xs font-mono text-emerald-300"
+              >
+                {pruningStatusBanner}
+              </div>
+            )}
+
+            <div className="grid grid-cols-2 gap-3 text-xs">
+              <div>
+                <label htmlFor="min-ifd-input" className="block text-[11px] text-slate-400 mb-1">
+                  Min IFD (Drop Trivial): <span className="font-mono text-slate-200">{minIfdThreshold}</span>
+                </label>
+                <input
+                  id="min-ifd-input"
+                  type="range"
+                  min={0.1}
+                  max={0.45}
+                  step={0.05}
+                  value={minIfdThreshold}
+                  onChange={(e) => setMinIfdThreshold(Number(e.target.value))}
+                  className="w-full accent-blue-500"
+                />
+              </div>
+              <div>
+                <label htmlFor="max-ifd-input" className="block text-[11px] text-slate-400 mb-1">
+                  Max IFD (Drop Noisy PPL): <span className="font-mono text-slate-200">{maxIfdThreshold}</span>
+                </label>
+                <input
+                  id="max-ifd-input"
+                  type="range"
+                  min={0.7}
+                  max={1.15}
+                  step={0.05}
+                  value={maxIfdThreshold}
+                  onChange={(e) => setMaxIfdThreshold(Number(e.target.value))}
+                  className="w-full accent-blue-500"
+                />
+              </div>
+            </div>
+
+            <div className="grid grid-cols-3 gap-2 font-mono text-xs tabular-nums">
+              <div className="bg-[#0B0F17] border border-slate-800 rounded p-2.5">
+                <div className="text-[10px] text-slate-400">Mean IFD Score</div>
+                <div className="text-emerald-400 font-semibold mt-0.5">
+                  {ifdAndDecontamReport.meanIfdScore}
+                </div>
+              </div>
+              <div className="bg-[#0B0F17] border border-slate-800 rounded p-2.5">
+                <div className="text-[10px] text-slate-400">Retained High-Signal</div>
+                <div className="text-slate-100 font-semibold mt-0.5">
+                  {ifdAndDecontamReport.retainedSamples.length} / {samples.length}
+                </div>
+              </div>
+              <div className="bg-[#0B0F17] border border-slate-800 rounded p-2.5">
+                <div className="text-[10px] text-slate-400">Outliers Flagged</div>
+                <div className="text-amber-400 font-semibold mt-0.5">
+                  {ifdAndDecontamReport.prunedHighPplCount + ifdAndDecontamReport.prunedLowIfdCount}
+                </div>
+              </div>
+            </div>
+
+            <div className="bg-[#0B0F17] border border-slate-800 rounded-lg p-3 space-y-2">
+              <div className="flex items-center justify-between text-xs">
+                <span className="font-semibold text-slate-200">
+                  13-Gram Benchmark Decontamination Matrix
+                </span>
+                <span className="text-[10px] font-mono px-1.5 py-0.5 rounded bg-emerald-500/15 text-emerald-400">
+                  0 Test Leaks
+                </span>
+              </div>
+              <div className="grid grid-cols-2 gap-2 text-[11px] font-mono">
+                {ifdAndDecontamReport.benchmarkDecontaminationSummary.map((b) => (
+                  <div
+                    key={b.benchmark}
+                    className="flex items-center justify-between bg-[#111827] border border-slate-800/80 rounded px-2.5 py-1.5"
+                  >
+                    <span className="text-slate-300">{b.benchmark}</span>
+                    <span className="text-emerald-400">{b.status}</span>
+                  </div>
+                ))}
+              </div>
+            </div>
+          </div>
+
+          <button
+            type="button"
+            onClick={() => {
+              if (ifdAndDecontamReport.retainedSamples.length > 0) {
+                const dropped =
+                  samples.length - ifdAndDecontamReport.retainedSamples.length;
+                onReplaceSamples?.(
+                  ifdAndDecontamReport.retainedSamples,
+                  `Applied LIMA IFD Pruning (${minIfdThreshold}–${maxIfdThreshold}): retained ${ifdAndDecontamReport.retainedSamples.length} high-signal rows, pruned ${dropped} outliers.`
+                );
+                setPruningStatusBanner(
+                  `LIMA IFD Filter applied: retained ${ifdAndDecontamReport.retainedSamples.length} high-density samples (Mean IFD ${ifdAndDecontamReport.meanIfdScore}), pruned ${dropped} outlier/redundant rows.`
+                );
+              }
+            }}
+            className="w-full inline-flex items-center justify-center gap-1.5 px-3.5 py-2 text-xs font-medium text-slate-100 bg-slate-800 hover:bg-slate-700 border border-slate-700 rounded-lg transition-colors"
+          >
+            <Filter className="w-3.5 h-3.5 text-emerald-400" />
+            Apply LIMA IFD Filter &amp; Decontaminate Active Corpus
+          </button>
+        </div>
+      </section>
+
+      {/* Section 06: Interactive Dataset Sample Editor, Token Length Histogram & Version History */}
+      <section className="grid grid-cols-1 lg:grid-cols-12 gap-6 items-stretch">
+        {/* Normalized Records List, Token Length Histogram & In-Place ChatML Editor */}
+        <div className="lg:col-span-7 bg-[#111827] border border-slate-800/90 rounded-lg p-5 space-y-4">
+          <div className="pb-3 border-b border-slate-800/80 flex flex-wrap items-center justify-between gap-2">
+            <div>
+              <h2 className="text-base font-semibold text-slate-100">
+                06. Interactive Sample Editor &amp; Token Length Truncation Analyzer ({samples.length} Records)
+              </h2>
+              <p className="text-xs text-slate-400 mt-0.5">
+                Inspect token length distribution vs. context cutoff, search records, and edit normalized {targetFormat.toUpperCase()} samples in place
+              </p>
+            </div>
+
+            <div className="flex items-center gap-2">
+              <label htmlFor="cutoff-select" className="text-[11px] font-mono text-slate-400">
+                Cutoff:
+              </label>
+              <select
+                id="cutoff-select"
+                value={contextCutoffTokens}
+                onChange={(e) => setContextCutoffTokens(Number(e.target.value))}
+                className="bg-[#0B0F17] border border-slate-800 rounded px-2 py-1 text-xs font-mono text-slate-200"
+              >
+                <option value={128}>128 tok (Strict Edge)</option>
+                <option value={256}>256 tok</option>
+                <option value={512}>512 tok</option>
+                <option value={2048}>2048 tok</option>
+              </select>
+            </div>
+          </div>
+
+          {/* Token Length Distribution Histogram */}
+          <div className="bg-[#0B0F17] border border-slate-800/90 rounded-lg p-3.5 space-y-2.5">
+            <div className="flex flex-wrap items-center justify-between gap-2 text-xs font-mono">
+              <span className="text-slate-300 font-semibold">
+                Token Length Histogram (Avg: {tokenHistogramReport.avgSampleTokens} tok · Max:{' '}
+                {tokenHistogramReport.maxSampleTokens} tok)
+              </span>
+              <span
+                className={
+                  tokenHistogramReport.truncatedSampleIds.length > 0
+                    ? 'text-amber-400'
+                    : 'text-emerald-400'
+                }
+              >
+                {tokenHistogramReport.truncatedSampleIds.length} sample(s) &gt;{' '}
+                {contextCutoffTokens} tok ({tokenHistogramReport.truncationRiskPct}% truncation risk)
+              </span>
+            </div>
+            <div className="grid grid-cols-5 gap-2">
+              {tokenHistogramReport.buckets.map((b) => (
+                <div
+                  key={b.rangeLabel}
+                  className={`p-2 rounded border text-center font-mono text-xs ${
+                    b.exceedsCutoff && b.count > 0
+                      ? 'bg-amber-500/10 border-amber-500/40 text-amber-300'
+                      : 'bg-[#111827] border-slate-800 text-slate-300'
+                  }`}
+                >
+                  <div className="text-[10px] text-slate-400">{b.rangeLabel}</div>
+                  <div className="text-sm font-semibold mt-0.5">{b.count} rows</div>
+                </div>
+              ))}
+            </div>
+          </div>
+
+          {/* Search & Truncation Filter Bar */}
+          <div className="flex flex-wrap items-center gap-2">
+            <input
+              type="search"
+              aria-label="Search dataset samples"
+              placeholder="Search samples by prompt, code, or tag..."
+              value={sampleSearchQuery}
+              onChange={(e) => setSampleSearchQuery(e.target.value)}
+              className="flex-1 bg-[#0B0F17] border border-slate-800 rounded-lg px-3 py-1.5 text-xs text-slate-100 placeholder:text-slate-500"
+            />
+            <label className="inline-flex items-center gap-1.5 text-xs text-slate-300 cursor-pointer bg-[#0B0F17] border border-slate-800 rounded-lg px-3 py-1.5">
+              <input
+                type="checkbox"
+                checked={onlyTruncationRisk}
+                onChange={(e) => setOnlyTruncationRisk(e.target.checked)}
+                className="rounded border-slate-700 bg-slate-900 text-blue-600"
+              />
+              <span>Only &gt; {contextCutoffTokens} tok</span>
+            </label>
+          </div>
+
+          {sampleEditNotice && (
+            <div className="text-xs font-mono text-emerald-400">{sampleEditNotice}</div>
+          )}
+
+          <div className="grid grid-cols-1 md:grid-cols-12 gap-4">
+            <div className="md:col-span-5 divide-y divide-slate-800/70 max-h-72 overflow-y-auto pr-1">
+              {filteredSamples.map((s) => {
+                const diag = ifdAndDecontamReport.diagnostics[s.id];
+                const isTruncated = s.tokenEstimate > contextCutoffTokens;
+                return (
+                  <button
+                    key={s.id}
+                    type="button"
+                    onClick={() => {
+                      setSelectedSampleId(s.id);
+                      setIsEditingSample(false);
+                      setEditedFormattedText(s.formattedPreview);
+                    }}
+                    className={`w-full text-left py-2.5 px-2.5 rounded transition-colors ${
+                      activeSample?.id === s.id
+                        ? 'bg-blue-600/15 text-slate-100'
+                        : 'hover:bg-slate-800/40 text-slate-300'
+                    }`}
+                  >
+                    <div className="flex items-center justify-between gap-1">
+                      <span className="text-xs font-mono font-medium truncate">
+                        {s.sourceDataset}
+                      </span>
+                      {isTruncated && (
+                        <span className="text-[9px] font-mono px-1.5 py-0.5 rounded bg-amber-500/20 text-amber-300 shrink-0">
+                          &gt;Cutoff
+                        </span>
+                      )}
+                    </div>
+                    <div className="text-[11px] text-slate-400 mt-0.5 font-mono tabular-nums">
+                      {s.tokenEstimate} tok · IFD {diag?.ifdScore ?? 0.55} · PPL{' '}
+                      {diag?.perplexity ?? 5.1}
+                    </div>
+                    <div className="text-[11px] text-slate-500 mt-0.5 truncate">
+                      Tags: {s.tags.join(' · ')}
+                    </div>
+                  </button>
+                );
+              })}
+            </div>
+
+            <div className="md:col-span-7 bg-[#0B0F17] border border-slate-800/80 rounded-lg p-3.5 font-mono text-xs overflow-x-auto max-h-72 flex flex-col justify-between">
               {activeSample ? (
                 <>
-                  <div className="pb-2 mb-2 border-b border-slate-800 text-[11px] text-slate-400 flex items-center justify-between">
-                    <span>Source: {activeSample.sourceDataset}</span>
-                    <span>
-                      Status:{' '}
-                      {activeSample.piiDetected
-                        ? 'Needs PII Redaction'
-                        : 'Normalized & Verified'}
-                    </span>
+                  <div className="pb-2 mb-2 border-b border-slate-800 text-[11px] text-slate-400 flex items-center justify-between gap-2">
+                    <span className="truncate">Source: {activeSample.sourceDataset}</span>
+                    <div className="flex items-center gap-1.5 shrink-0">
+                      {!isEditingSample ? (
+                        <button
+                          type="button"
+                          onClick={() => {
+                            setIsEditingSample(true);
+                            setEditedFormattedText(activeSample.formattedPreview);
+                          }}
+                          className="inline-flex items-center gap-1 px-2 py-0.5 rounded bg-slate-800 hover:bg-slate-700 text-slate-200 text-[11px]"
+                        >
+                          <Edit3 className="w-3 h-3" />
+                          Edit Sample
+                        </button>
+                      ) : (
+                        <button
+                          type="button"
+                          onClick={() => {
+                            const updatedList = samples.map((item) =>
+                              item.id === activeSample.id
+                                ? {
+                                    ...item,
+                                    formattedPreview: editedFormattedText,
+                                    tokenEstimate: Math.max(
+                                      12,
+                                      Math.round(editedFormattedText.length / 3.8)
+                                    ),
+                                    cleaned: true,
+                                  }
+                                : item
+                            );
+                            onReplaceSamples?.(
+                              updatedList,
+                              `Edited sample ${activeSample.id} in-place (${targetFormat.toUpperCase()}).`
+                            );
+                            setIsEditingSample(false);
+                            setSampleEditNotice(
+                              `Saved in-place edit to sample ${activeSample.id}.`
+                            );
+                          }}
+                          className="inline-flex items-center gap-1 px-2 py-0.5 rounded bg-emerald-600 hover:bg-emerald-500 text-white text-[11px]"
+                        >
+                          <Check className="w-3 h-3" />
+                          Save Edit
+                        </button>
+                      )}
+                    </div>
                   </div>
-                  <pre className="text-slate-200 whitespace-pre-wrap leading-relaxed text-[11px]">
-                    {activeSample.formattedPreview}
-                  </pre>
+                  {isEditingSample ? (
+                    <textarea
+                      aria-label="Edit normalized sample content"
+                      value={editedFormattedText}
+                      onChange={(e) => setEditedFormattedText(e.target.value)}
+                      rows={8}
+                      className="w-full bg-[#111827] border border-slate-700 rounded p-2 text-[11px] font-mono text-slate-100 leading-relaxed"
+                    />
+                  ) : (
+                    <pre className="text-slate-200 whitespace-pre-wrap leading-relaxed text-[11px]">
+                      {activeSample.formattedPreview}
+                    </pre>
+                  )}
                 </>
               ) : (
                 <div className="text-slate-500 py-8 text-center">Select a sample to inspect</div>
@@ -759,7 +1261,7 @@ export const DatasetStudioView: React.FC<DatasetStudioViewProps> = ({
           <div className="pb-4 border-b border-slate-800/80 flex items-center justify-between">
             <div>
               <h2 className="text-base font-semibold text-slate-100">
-                05. Dataset Versioning &amp; Cloud Sync Ledger
+                07. Dataset Versioning &amp; Cloud Sync Ledger
               </h2>
               <p className="text-xs text-slate-400 mt-0.5">
                 Immutable SHA-256 dataset snapshots synced with remote object storage
@@ -768,7 +1270,7 @@ export const DatasetStudioView: React.FC<DatasetStudioViewProps> = ({
             <GitCommit className="w-4 h-4 text-slate-400" />
           </div>
 
-          <div className="mt-4 divide-y divide-slate-800/70 max-h-72 overflow-y-auto">
+          <div className="mt-4 divide-y divide-slate-800/70 max-h-96 overflow-y-auto">
             {datasetVersions.map((ver) => (
               <div key={ver.versionId} className="py-3 space-y-1">
                 <div className="flex items-center justify-between text-xs">

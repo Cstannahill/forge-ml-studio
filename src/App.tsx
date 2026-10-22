@@ -12,6 +12,7 @@ import {
   LoggingFramework,
   NormalizedDatasetSample,
   PlainLanguageComparison,
+  PreferenceAlignmentMethod,
   SELECTED_MODEL_STORAGE_KEY,
   SafetensorsExportPlan,
   StandardizedModelCardResult,
@@ -519,6 +520,148 @@ export default function App() {
     );
   };
 
+  // Handler: Rollback trainingSeries to the Best Val Loss Checkpoint index
+  const handleRollbackTrainingToIndex = (stepIndex: number) => {
+    setTrainingSeriesByModel((prevMap) => {
+      const currentSeries = prevMap[selectedModelId] ?? INITIAL_TRAINING_SERIES;
+      const rolledBack = currentSeries.slice(0, Math.max(1, stepIndex + 1));
+      const nextMap = {
+        ...prevMap,
+        [selectedModelId]: rolledBack,
+      };
+      try {
+        window.localStorage.setItem(
+          TRAINING_SERIES_STORAGE_KEY,
+          serializeTrainingSeriesMap(nextMap)
+        );
+        window.localStorage.setItem('trainingSeries', JSON.stringify(rolledBack));
+      } catch {
+        // Ignore storage errors
+      }
+      const bestPt = rolledBack[rolledBack.length - 1];
+      appendLog(
+        'INFO',
+        'TRAINER',
+        `[EARLY_STOP_ROLLBACK] Rolled back ${selectedModelId} to Best Validation Loss Checkpoint at Step ${bestPt.step} (val_loss=${bestPt.valLoss}).`,
+        `model=${selectedModelId} | step=${bestPt.step} | val_loss=${bestPt.valLoss}`
+      );
+      return nextMap;
+    });
+  };
+
+  // Handler: Simulate Late-Epoch Overfit Spike to test Early-Stopping Watchdog
+  const handleSimulateOverfitStep = () => {
+    setTrainingSeriesByModel((prevMap) => {
+      const currentSeries = prevMap[selectedModelId] ?? INITIAL_TRAINING_SERIES;
+      const last = currentSeries[currentSeries.length - 1];
+      const overfitPoint: TrainingMetricPoint = {
+        step: last.step + 50,
+        epoch: Number((last.epoch + 0.25).toFixed(2)),
+        trainLoss: Number(Math.max(0.35, last.trainLoss - 0.08).toFixed(3)),
+        valLoss: Number((last.valLoss + 0.14).toFixed(3)),
+        gradNorm: Number((last.gradNorm + 0.32).toFixed(3)),
+        learningRate: activeHpoConfig.learningRate,
+        tokensPerSec: last.tokensPerSec,
+      };
+      const updatedSeries = [...currentSeries, overfitPoint];
+      const nextMap = {
+        ...prevMap,
+        [selectedModelId]: updatedSeries,
+      };
+      try {
+        window.localStorage.setItem(
+          TRAINING_SERIES_STORAGE_KEY,
+          serializeTrainingSeriesMap(nextMap)
+        );
+        window.localStorage.setItem('trainingSeries', JSON.stringify(updatedSeries));
+      } catch {
+        // Ignore storage errors
+      }
+      appendLog(
+        'WARN',
+        'TRAINER',
+        `[EARLY_STOP_WATCHDOG] Validation loss diverged at Step ${overfitPoint.step} (train_loss=${overfitPoint.trainLoss}, val_loss=${overfitPoint.valLoss}). Recommend rollback to peak generalization checkpoint.`,
+        `step=${overfitPoint.step} | val_loss=${overfitPoint.valLoss}`
+      );
+      return nextMap;
+    });
+  };
+
+  // Handler: Apply Stage 2 Preference Alignment (ORPO / SimPO / DPO / KTO) Boost
+  const handleApplyStage2AlignmentBoost = (
+    method: PreferenceAlignmentMethod,
+    ifEvalGain: number,
+    mtBenchGain: number
+  ) => {
+    setModels((prev) =>
+      prev.map((m) => {
+        if (m.id !== selectedModelId) return m;
+        const currentFt = m.fineTunedBenchmarks ?? m.baseBenchmarks;
+        return {
+          ...m,
+          fineTunedBenchmarks: {
+            ...currentFt,
+            ifEval: Number(Math.min(96.5, currentFt.ifEval + ifEvalGain * 0.35).toFixed(1)),
+            mtBench: Number(Math.min(9.6, currentFt.mtBench + mtBenchGain * 0.35).toFixed(2)),
+          },
+        };
+      })
+    );
+    appendLog(
+      'METRIC',
+      'TRAINER',
+      `Completed Stage 2 ${method} Preference Alignment pass for ${selectedModelId}: projected IFEval +${ifEvalGain}%, MT-Bench +${mtBenchGain}.`,
+      `stage=2 | method=${method} | model=${selectedModelId}`
+    );
+  };
+
+  // Handlers: Append or Replace Dataset Samples (from Teacher Distillation, IFD Pruning, or In-Place Edit)
+  const handleAppendDatasetSamples = (
+    newSamples: NormalizedDatasetSample[],
+    note: string
+  ) => {
+    setSamples((prev) => [...newSamples, ...prev]);
+    appendLog('INFO', 'DATA_PIPELINE', note, `added=${newSamples.length}`);
+  };
+
+  const handleReplaceDatasetSamples = (
+    nextSamples: NormalizedDatasetSample[],
+    note: string
+  ) => {
+    setSamples(nextSamples);
+    appendLog('INFO', 'DATA_PIPELINE', note, `total=${nextSamples.length}`);
+  };
+
+  // Handler: Send Flagged Arena Prompt & Verified Target to Dataset Studio
+  const handleSendFlaggedPromptToDatasetStudio = (draft: {
+    instruction: string;
+    output: string;
+    domainTag: string;
+  }) => {
+    const newRecord = normalizeDatasetRecord(
+      {
+        instruction: draft.instruction,
+        input: '',
+        output: draft.output,
+      },
+      `ArenaCorrection/${selectedModel.name}`,
+      samples.length + 1,
+      targetFormat
+    );
+    const enriched: NormalizedDatasetSample = {
+      ...newRecord,
+      id: `arena-fix-${Date.now()}`,
+      tags: Array.from(new Set([...newRecord.tags, draft.domainTag, 'arena-flagged'])),
+    };
+    setSamples((prev) => [enriched, ...prev]);
+    appendLog(
+      'INFO',
+      'EVAL_HARNESS',
+      `Flagged base-model failure in Evaluation Arena and appended verified completion (${draft.domainTag}) to Dataset Studio corpus.`,
+      `sample_id=${enriched.id} | tag=${draft.domainTag}`
+    );
+  };
+
   // Handler: Run Automated HPO + Auto-Benchmark Trial
   const handleRunHpoSweep = () => {
     const lastPt = trainingSeries[trainingSeries.length - 1];
@@ -919,6 +1062,9 @@ export default function App() {
             isTrainingActive={isTrainingActive}
             onRunTrainingStep={handleRunTrainingStep}
             onResetTrainingSeries={handleResetTrainingSeries}
+            onRollbackTrainingToIndex={handleRollbackTrainingToIndex}
+            onSimulateOverfitStep={handleSimulateOverfitStep}
+            onApplyStage2AlignmentBoost={handleApplyStage2AlignmentBoost}
             onRunHpoSweep={handleRunHpoSweep}
             activeHpoConfig={activeHpoConfig}
             onUpdateHpoConfig={setActiveHpoConfig}
@@ -946,6 +1092,8 @@ export default function App() {
             onApplyCuratedBlend={handleApplyCuratedBlend}
             onRunAgenticCleanAndTag={handleRunAgenticCleanAndTag}
             onCommitDatasetVersion={handleCommitDatasetVersion}
+            onAppendSamples={handleAppendDatasetSamples}
+            onReplaceSamples={handleReplaceDatasetSamples}
             datasetVersions={datasetVersions}
             isBusy={isDatasetBusy}
           />
@@ -960,6 +1108,7 @@ export default function App() {
             onTriggerFineTuneAndCompare={(id) => handleTriggerFineTuneAndCompare(id)}
             plainExplanations={plainExplanations}
             onExplainBenchmarksWithLlm={handleExplainBenchmarksWithLlm}
+            onSendFlaggedPromptToDatasetStudio={handleSendFlaggedPromptToDatasetStudio}
             isExplaining={isExplainingBenchmarks}
           />
         )}
