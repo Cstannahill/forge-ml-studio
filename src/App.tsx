@@ -6,6 +6,7 @@ import {
 } from 'lucide-react';
 import {
   ArchitectureFamily,
+  CommandPaletteActionItem,
   GpuAlertThresholds,
   GpuTelemetrySnapshot,
   HyperparameterConfig,
@@ -49,6 +50,7 @@ import {
   AgenticOrchestratorView,
 } from './components/AgenticOrchestratorView';
 import { CloudAndContainerView } from './components/CloudAndContainerView';
+import { CommandPaletteModal } from './components/CommandPaletteModal';
 
 type ActiveTabId = 'command' | 'datasets' | 'benchmarks' | 'agents' | 'cloud';
 
@@ -615,6 +617,37 @@ export default function App() {
     );
   };
 
+  // Handler: Apply Stage 3 GRPO Verifiable Reward (RLVR) Boost
+  const handleApplyStage3GrpoBoost = (
+    gsm8kGain: number,
+    humanEvalGain: number,
+    ifEvalGain: number
+  ) => {
+    setModels((prev) =>
+      prev.map((m) => {
+        if (m.id !== selectedModelId) return m;
+        const currentFt = m.fineTunedBenchmarks ?? m.baseBenchmarks;
+        return {
+          ...m,
+          fineTunedBenchmarks: {
+            ...currentFt,
+            gsm8k: Number(Math.min(98.5, currentFt.gsm8k + gsm8kGain * 0.4).toFixed(1)),
+            humanEval: Number(
+              Math.min(96.5, currentFt.humanEval + humanEvalGain * 0.4).toFixed(1)
+            ),
+            ifEval: Number(Math.min(97.5, currentFt.ifEval + ifEvalGain * 0.4).toFixed(1)),
+          },
+        };
+      })
+    );
+    appendLog(
+      'METRIC',
+      'TRAINER',
+      `Completed Stage 3 GRPO Verifiable Reward (RLVR) pass for ${selectedModelId}: projected GSM8K +${gsm8kGain}%, HumanEval+ +${humanEvalGain}%, IFEval +${ifEvalGain}%.`,
+      `stage=3 | method=GRPO_RLVR | model=${selectedModelId}`
+    );
+  };
+
   // Handlers: Append or Replace Dataset Samples (from Teacher Distillation, IFD Pruning, or In-Place Edit)
   const handleAppendDatasetSamples = (
     newSamples: NormalizedDatasetSample[],
@@ -638,13 +671,14 @@ export default function App() {
     output: string;
     domainTag: string;
   }) => {
+    const activeModelObj = models.find((m) => m.id === selectedModelId) ?? models[0];
     const newRecord = normalizeDatasetRecord(
       {
         instruction: draft.instruction,
         input: '',
         output: draft.output,
       },
-      `ArenaCorrection/${selectedModel.name}`,
+      `ArenaCorrection/${activeModelObj.name}`,
       samples.length + 1,
       targetFormat
     );
@@ -949,6 +983,144 @@ export default function App() {
     { id: 'cloud', label: 'Cloud & Docker' },
   ];
 
+  const [isCommandPaletteOpen, setIsCommandPaletteOpen] = useState(false);
+
+  useEffect(() => {
+    const handleGlobalKeyDown = (e: KeyboardEvent) => {
+      if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === 'k') {
+        e.preventDefault();
+        setIsCommandPaletteOpen((prev) => !prev);
+      }
+    };
+    window.addEventListener('keydown', handleGlobalKeyDown);
+    return () => window.removeEventListener('keydown', handleGlobalKeyDown);
+  }, []);
+
+  const commandPaletteActions: CommandPaletteActionItem[] = [
+    {
+      id: 'nav-command',
+      title: 'Go to Command Center',
+      subtitle: 'Telemetry, HPO, imatrix Calibration, Stage 2/3 Alignment, Adapter Merger',
+      category: 'NAVIGATION',
+      shortcutHint: 'Tab 1',
+      keywords: ['command', 'home', 'telemetry', 'imatrix', 'grpo', 'dora', 'safetensors'],
+    },
+    {
+      id: 'nav-datasets',
+      title: 'Go to Dataset Studio',
+      subtitle: 'Curated Sub-2B Blends, Teacher Distillation, Curriculum Pacing, Custom Upload',
+      category: 'NAVIGATION',
+      shortcutHint: 'Tab 2',
+      keywords: ['dataset', 'curriculum', 'tokenizer', 'upload', 'jsonl', 'ifd', 'distillation'],
+    },
+    {
+      id: 'nav-benchmarks',
+      title: 'Go to Model Benchmarks & Arena',
+      subtitle: 'Base vs. Fine-Tuned Radar, Side-by-Side Vibe Check Arena, Red-Team Stress Suite',
+      category: 'NAVIGATION',
+      shortcutHint: 'Tab 3',
+      keywords: ['benchmarks', 'arena', 'red team', 'mmlu', 'humaneval', 'gsm8k', 'ifeval'],
+    },
+    {
+      id: 'nav-agents',
+      title: 'Go to Agent Orchestrator',
+      subtitle: 'Gemini, OpenRouter & Local Ollama Sub-Agents for HPO & Data Curation',
+      category: 'NAVIGATION',
+      shortcutHint: 'Tab 4',
+      keywords: ['agents', 'gemini', 'openrouter', 'ollama'],
+    },
+    {
+      id: 'nav-cloud',
+      title: 'Go to Cloud & Docker',
+      subtitle: 'Modal, RunPod, Local Inference Server Launcher (llama.cpp / Ollama / vLLM) & SDKs',
+      category: 'NAVIGATION',
+      shortcutHint: 'Tab 5',
+      keywords: ['cloud', 'docker', 'llama.cpp', 'vllm', 'ollama', 'sdk', 'openai'],
+    },
+    ...models.map((m) => ({
+      id: `model-${m.id}`,
+      title: `Switch Active Model -> ${m.name}`,
+      subtitle: `${m.architecture} · ${m.paramsBillions}B params · ${m.contextWindow.toLocaleString()} ctx`,
+      category: 'MODEL_SWITCH' as const,
+      shortcutHint: m.id === selectedModelId ? 'Active' : 'Select',
+      keywords: [m.id, m.name, m.architecture, `${m.paramsBillions}B`],
+    })),
+    {
+      id: 'act-train-step',
+      title: 'Step Training (+50 Steps)',
+      subtitle: 'Advance active model fine-tuning telemetry and persist to localStorage',
+      category: 'PIPELINE_ACTION',
+      shortcutHint: 'Action',
+      keywords: ['step', 'train', 'epoch', 'loss'],
+    },
+    {
+      id: 'act-auto-hpo',
+      title: 'Run Auto-HPO & Benchmark Evaluation',
+      subtitle: 'Compute next optimal hyperparameter trial and evaluate against base model',
+      category: 'PIPELINE_ACTION',
+      shortcutHint: 'Action',
+      keywords: ['hpo', 'sweep', 'benchmark', 'evaluate'],
+    },
+    {
+      id: 'act-stage3-grpo',
+      title: 'Execute Stage 3 GRPO Verifiable Reward Pass',
+      subtitle: 'Run deterministic RLVR code/math/JSON verifiers on active checkpoint',
+      category: 'PIPELINE_ACTION',
+      shortcutHint: 'Stage 3',
+      keywords: ['grpo', 'rlvr', 'reward', 'verifier', 'math', 'code'],
+    },
+    {
+      id: 'theme-soft',
+      title: 'Theme: Gruvbox Dark Warm Soft (#2F2F2F)',
+      subtitle: 'Default warm charcoal surface preset',
+      category: 'THEME',
+      shortcutHint: '#2F2F2F',
+      keywords: ['theme', 'gruvbox', 'soft', '2f2f2f'],
+    },
+    {
+      id: 'theme-medium',
+      title: 'Theme: Gruvbox Dark Medium (#282828)',
+      subtitle: 'Classic Gruvbox medium contrast background',
+      category: 'THEME',
+      shortcutHint: '#282828',
+      keywords: ['theme', 'gruvbox', 'medium', '282828'],
+    },
+    {
+      id: 'theme-hard',
+      title: 'Theme: Gruvbox Dark Hard (#1D2021)',
+      subtitle: 'High-contrast deep studio surface preset',
+      category: 'THEME',
+      shortcutHint: '#1D2021',
+      keywords: ['theme', 'gruvbox', 'hard', '1d2021'],
+    },
+  ];
+
+  const handleExecuteCommandPaletteAction = (actionId: string) => {
+    if (actionId === 'nav-command') setActiveTab('command');
+    else if (actionId === 'nav-datasets') setActiveTab('datasets');
+    else if (actionId === 'nav-benchmarks') setActiveTab('benchmarks');
+    else if (actionId === 'nav-agents') setActiveTab('agents');
+    else if (actionId === 'nav-cloud') setActiveTab('cloud');
+    else if (actionId.startsWith('model-')) {
+      const targetId = actionId.replace('model-', '');
+      setSelectedModelId(targetId);
+    } else if (actionId === 'act-train-step') {
+      handleRunTrainingStep();
+    } else if (actionId === 'act-auto-hpo') {
+      handleRunHpoSweep();
+      setActiveTab('benchmarks');
+    } else if (actionId === 'act-stage3-grpo') {
+      handleApplyStage3GrpoBoost(4.6, 4.2, 3.8);
+      setActiveTab('benchmarks');
+    } else if (actionId === 'theme-soft') {
+      setGruvboxBgPreset('#2F2F2F');
+    } else if (actionId === 'theme-medium') {
+      setGruvboxBgPreset('#282828');
+    } else if (actionId === 'theme-hard') {
+      setGruvboxBgPreset('#1D2021');
+    }
+  };
+
   return (
     <div
       className="min-h-screen text-[#FFE9B1] flex flex-col transition-colors"
@@ -1065,6 +1237,8 @@ export default function App() {
             onRollbackTrainingToIndex={handleRollbackTrainingToIndex}
             onSimulateOverfitStep={handleSimulateOverfitStep}
             onApplyStage2AlignmentBoost={handleApplyStage2AlignmentBoost}
+            onApplyStage3GrpoBoost={handleApplyStage3GrpoBoost}
+            onOpenCommandPalette={() => setIsCommandPaletteOpen(true)}
             onRunHpoSweep={handleRunHpoSweep}
             activeHpoConfig={activeHpoConfig}
             onUpdateHpoConfig={setActiveHpoConfig}
@@ -1138,6 +1312,14 @@ export default function App() {
         )}
       </main>
 
+      {/* Global Command Palette Modal (Cmd/Ctrl + K) */}
+      <CommandPaletteModal
+        isOpen={isCommandPaletteOpen}
+        onClose={() => setIsCommandPaletteOpen(false)}
+        actions={commandPaletteActions}
+        onExecuteAction={handleExecuteCommandPaletteAction}
+      />
+
       {/* Gruvbox Theme & Pipeline Status Footer */}
       <footer className="border-t border-[#4A453E] bg-[#22211F] py-4 px-6 text-xs text-[#A89984]">
         <div className="max-w-[1400px] mx-auto flex flex-col lg:flex-row items-center justify-between gap-3">
@@ -1146,6 +1328,13 @@ export default function App() {
           </span>
 
           <div className="flex flex-wrap items-center gap-3 font-mono text-[11px]">
+            <button
+              type="button"
+              onClick={() => setIsCommandPaletteOpen(true)}
+              className="px-2 py-0.5 rounded bg-[#2F2F2F] border border-[#4A453E] text-[#83A598] hover:text-[#FFE9B1] transition-colors"
+            >
+              Cmd/Ctrl + K Command Palette
+            </button>
             <span className="inline-flex items-center gap-1.5 text-[#D5C4A1]">
               <span className="w-2.5 h-2.5 rounded-full bg-[#458588] inline-block" />
               Theme: Gruvbox ({gruvboxBgPreset} · #FFE9B1 · #458588 · JetBrainsMono Nerd Font)

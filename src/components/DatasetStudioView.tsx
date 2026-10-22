@@ -16,12 +16,17 @@ import {
   Zap,
 } from 'lucide-react';
 import {
+  ArchitectureFamily,
+  CurriculumPacingStrategy,
   DatasetValidationReport,
   NormalizedDatasetSample,
   SyntheticDistilledPair,
   TargetFormat,
+  buildCurriculumPacingPlan,
   computeTokenLengthHistogramAndTruncation,
   generateSyntheticDistillationBatch,
+  inspectTokenizerAndChatTemplate,
+  parseCustomDatasetUploadText,
   scoreAndPruneDatasetByIfdAndDecontamination,
   validateDatasetRecords,
 } from '../lib/pipelineLogic';
@@ -200,6 +205,50 @@ export const DatasetStudioView: React.FC<DatasetStudioViewProps> = ({
   const tokenHistogramReport = computeTokenLengthHistogramAndTruncation({
     samples,
     contextCutoffTokens,
+  });
+
+  // 4. 3-Phase Curriculum Pacing & Annealing Scheduler State
+  const [curriculumStrategy, setCurriculumStrategy] =
+    useState<CurriculumPacingStrategy>('hybrid_ifd_length');
+  const [curriculumAppliedBanner, setCurriculumAppliedBanner] = useState<string | null>(null);
+
+  const curriculumPlan = buildCurriculumPacingPlan({
+    samples,
+    strategy: curriculumStrategy,
+    totalSteps: 600,
+  });
+
+  // 5. Tokenizer Special-Token Surgery & Chat Template Verifier State
+  const [tokenizerArch, setTokenizerArch] = useState<ArchitectureFamily>('Qwen3.5');
+  const [injectReasoningTokens, setInjectReasoningTokens] = useState<boolean>(true);
+  const [injectToolTokens, setInjectToolTokens] = useState<boolean>(true);
+
+  const tokenizerReport = inspectTokenizerAndChatTemplate({
+    architecture: tokenizerArch,
+    modelName:
+      tokenizerArch === 'LFM2.5'
+        ? 'LFM2.5-1.2B-Instruct'
+        : tokenizerArch === 'Gemma4'
+        ? 'Gemma4-E2B-Instruct'
+        : 'Qwen3.5-2B-Instruct',
+    targetFormat,
+    injectReasoningTokens,
+    injectToolTokens,
+  });
+
+  // 6. Custom Dataset Upload / Paste & Auto-Schema Normalizer State
+  const [customSourceLabel, setCustomSourceLabel] = useState<string>(
+    'CustomUpload/proprietary-edge-logs.jsonl'
+  );
+  const [customRawText, setCustomRawText] = useState<string>(
+    `{"instruction": "Extract telemetry alert code and severity from log: [GPU0] TEMP=89C POWER=410W", "input": "", "output": "<think>\\nParse GPU0 log fields and return strict JSON.\\n</think>\\n{\\"gpu_id\\": 0, \\"temp_c\\": 89, \\"severity\\": \\"CRITICAL\\"}"}\n{"instruction": "Write a compact Python helper to clamp learning rate warmup between 1e-6 and 2e-4.", "input": "", "output": "<think>\\nUse min/max clamping with linear step ratio.\\n</think>\\ndef clamp_lr(step: int, warmup: int) -> float:\\n    return max(1e-6, min(2e-4, 2e-4 * (step / max(1, warmup))))"}`
+  );
+  const [customImportBanner, setCustomImportBanner] = useState<string | null>(null);
+
+  const customParsePreview = parseCustomDatasetUploadText({
+    rawText: customRawText,
+    sourceLabel: customSourceLabel,
+    targetFormat,
   });
 
   const filteredSamples = samples.filter((s) => {
@@ -1290,6 +1339,310 @@ export const DatasetStudioView: React.FC<DatasetStudioViewProps> = ({
                 </div>
               </div>
             ))}
+          </div>
+        </div>
+      </section>
+
+      {/* Section 08: 3-Phase Curriculum Pacing Scheduler & Tokenizer Special-Token Surgery Verifier */}
+      <section className="grid grid-cols-1 lg:grid-cols-12 gap-6 items-stretch">
+        {/* Left 6 cols: 3-Phase Curriculum Learning & Annealing Scheduler */}
+        <div className="lg:col-span-6 bg-[#111827] border border-slate-800/90 rounded-lg p-5 flex flex-col justify-between space-y-4">
+          <div className="space-y-4">
+            <div className="flex flex-wrap items-center justify-between gap-2 pb-3 border-b border-slate-800/80">
+              <div>
+                <h2 className="text-base font-semibold text-slate-100 flex items-center">
+                  <span>08. 3-Phase Curriculum Pacing &amp; CoT Annealing Scheduler</span>
+                  <InfoTooltip termKey="curriculumLearning" align="left" />
+                </h2>
+                <p className="text-xs text-slate-400 mt-0.5">
+                  Order sub-2B training samples from easy syntax warmup to high-IFD reasoning chains
+                </p>
+              </div>
+
+              <select
+                aria-label="Curriculum Pacing Strategy"
+                value={curriculumStrategy}
+                onChange={(e) =>
+                  setCurriculumStrategy(e.target.value as CurriculumPacingStrategy)
+                }
+                className="bg-[#0B0F17] border border-slate-800 rounded px-2.5 py-1.5 text-xs font-mono text-slate-100"
+              >
+                <option value="hybrid_ifd_length">Hybrid IFD + Length (Recommended)</option>
+                <option value="ifd_ascending">IFD Difficulty Ascending</option>
+                <option value="length_ascending">Token Length Ascending</option>
+              </select>
+            </div>
+
+            <div className="grid grid-cols-2 gap-3 font-mono text-xs tabular-nums">
+              <div className="bg-[#0B0F17] border border-slate-800 rounded p-2.5">
+                <div className="text-[10px] text-slate-400">Convergence Speed Gain</div>
+                <div className="text-emerald-400 font-semibold mt-0.5">
+                  +{curriculumPlan.projectedConvergenceBoostPct}% Faster Convergence
+                </div>
+              </div>
+              <div className="bg-[#0B0F17] border border-slate-800 rounded p-2.5">
+                <div className="text-[10px] text-slate-400">Early Gradient Variance</div>
+                <div className="text-blue-400 font-semibold mt-0.5">
+                  -{curriculumPlan.gradientVarianceReductionPct}% Spike Reduction
+                </div>
+              </div>
+            </div>
+
+            <div className="space-y-2">
+              {curriculumPlan.phases.map((p) => (
+                <div
+                  key={p.phaseIndex}
+                  className="bg-[#0B0F17] border border-slate-800/90 rounded-lg p-3 space-y-1"
+                >
+                  <div className="flex flex-wrap items-center justify-between gap-2 text-xs font-mono">
+                    <span className="font-semibold text-slate-100">{p.phaseName}</span>
+                    <span className="text-emerald-400">
+                      {p.stepRangeLabel} · {p.lrSchedulePhase}
+                    </span>
+                  </div>
+                  <div className="text-[11px] font-mono text-slate-400">
+                    {p.sampleCount} samples · Avg {p.avgTokens} tok · Mean IFD {p.avgIfdScore}
+                  </div>
+                  <p className="text-[11px] text-slate-400">{p.focusDescription}</p>
+                </div>
+              ))}
+            </div>
+
+            {curriculumAppliedBanner && (
+              <div className="text-xs font-mono text-emerald-400">{curriculumAppliedBanner}</div>
+            )}
+          </div>
+
+          <button
+            type="button"
+            onClick={() => {
+              onReplaceSamples?.(
+                curriculumPlan.orderedSamples,
+                `Sorted ${curriculumPlan.orderedSamples.length} active samples by 3-Phase Curriculum (${curriculumStrategy}).`
+              );
+              setCurriculumAppliedBanner(
+                `Re-ordered all ${curriculumPlan.orderedSamples.length} active samples into 3-Phase Curriculum order (${curriculumStrategy}).`
+              );
+            }}
+            className="w-full inline-flex items-center justify-center gap-1.5 px-3.5 py-2 text-xs font-medium text-white bg-blue-600 hover:bg-blue-500 rounded-lg transition-colors"
+          >
+            <Layers className="w-3.5 h-3.5" />
+            Sort Active Corpus by 3-Phase Curriculum Order
+          </button>
+        </div>
+
+        {/* Right 6 cols: Tokenizer Special-Token Surgery & Chat Template Verifier */}
+        <div className="lg:col-span-6 bg-[#111827] border border-slate-800/90 rounded-lg p-5 flex flex-col justify-between space-y-4">
+          <div className="space-y-4">
+            <div className="flex flex-wrap items-center justify-between gap-2 pb-3 border-b border-slate-800/80">
+              <div>
+                <h2 className="text-base font-semibold text-slate-100 flex items-center">
+                  <span>Tokenizer Special-Token Surgery &amp; EOS Verifier</span>
+                  <InfoTooltip termKey="tokenizerSurgery" align="left" />
+                </h2>
+                <p className="text-xs text-slate-400 mt-0.5">
+                  Verify atomic special token IDs and prevent sub-2B infinite EOS generation loops
+                </p>
+              </div>
+
+              <div className="flex items-center gap-1 bg-[#0B0F17] p-1 rounded-lg border border-slate-800">
+                {(['Qwen3.5', 'LFM2.5', 'Gemma4'] as ArchitectureFamily[]).map((arch) => (
+                  <button
+                    key={arch}
+                    type="button"
+                    onClick={() => setTokenizerArch(arch)}
+                    className={`px-2.5 py-1 text-[11px] font-mono rounded transition-colors ${
+                      tokenizerArch === arch
+                        ? 'bg-blue-600 text-white font-semibold'
+                        : 'text-slate-400 hover:text-slate-200'
+                    }`}
+                  >
+                    {arch}
+                  </button>
+                ))}
+              </div>
+            </div>
+
+            <div className="grid grid-cols-1 sm:grid-cols-2 gap-2.5">
+              <label className="flex items-center gap-2 p-2.5 rounded bg-[#0B0F17] border border-slate-800 text-xs text-slate-200 cursor-pointer">
+                <input
+                  type="checkbox"
+                  checked={injectReasoningTokens}
+                  onChange={(e) => setInjectReasoningTokens(e.target.checked)}
+                  className="rounded border-slate-700 bg-slate-900 text-blue-600"
+                />
+                <span>Register Atomic &lt;think&gt; / &lt;/think&gt; IDs</span>
+              </label>
+              <label className="flex items-center gap-2 p-2.5 rounded bg-[#0B0F17] border border-slate-800 text-xs text-slate-200 cursor-pointer">
+                <input
+                  type="checkbox"
+                  checked={injectToolTokens}
+                  onChange={(e) => setInjectToolTokens(e.target.checked)}
+                  className="rounded border-slate-700 bg-slate-900 text-blue-600"
+                />
+                <span>Register Atomic &lt;tool_call&gt; IDs</span>
+              </label>
+            </div>
+
+            {/* Special Token Atomic ID Table */}
+            <div className="bg-[#0B0F17] border border-slate-800 rounded-lg p-3 space-y-1.5 font-mono text-xs">
+              <div className="flex items-center justify-between text-[11px] text-slate-400 pb-1 border-b border-slate-800">
+                <span>
+                  EOS Token: <strong className="text-slate-200">{tokenizerReport.eosTokenLiteral}</strong> (ID{' '}
+                  {tokenizerReport.eosTokenId})
+                </span>
+                <span
+                  className={
+                    tokenizerReport.isEosAligned ? 'text-emerald-400' : 'text-amber-400'
+                  }
+                >
+                  {tokenizerReport.isEosAligned
+                    ? '[100% ATOMIC SPECIAL TOKENS]'
+                    : '[WARNING: FRAGMENTED DELIMITERS]'}
+                </span>
+              </div>
+              {tokenizerReport.specialTokens.map((tok) => (
+                <div
+                  key={tok.tokenLiteral}
+                  className="flex items-center justify-between text-[11px] py-0.5"
+                >
+                  <span className="text-slate-200">
+                    {tok.tokenLiteral} <span className="text-slate-500">({tok.roleDescription})</span>
+                  </span>
+                  <span
+                    className={
+                      tok.atomicStatus === 'ATOMIC_SINGLE_ID'
+                        ? 'text-emerald-400'
+                        : 'text-amber-400'
+                    }
+                  >
+                    ID #{tok.tokenId} ·{' '}
+                    {tok.atomicStatus === 'ATOMIC_SINGLE_ID'
+                      ? '1 Atomic Token'
+                      : `${tok.subwordCount} Subwords`}
+                  </span>
+                </div>
+              ))}
+            </div>
+
+            <pre className="p-3 bg-[#0B0F17] border border-slate-800 rounded-lg font-mono text-[11px] text-slate-300 overflow-x-auto max-h-32 whitespace-pre leading-relaxed">
+              {tokenizerReport.surgeryScriptPy}
+            </pre>
+          </div>
+
+          <div className="pt-3 border-t border-slate-800/80 flex items-center justify-between text-xs font-mono text-slate-400">
+            <span>Embedding Table Alignment:</span>
+            <strong className="text-blue-400">
+              {tokenizerReport.requiresResizeTokenEmbeddings
+                ? 'resize_token_embeddings(pad_to_multiple_of=64)'
+                : 'Native Vocab Table'}
+            </strong>
+          </div>
+        </div>
+      </section>
+
+      {/* Section 09: Custom Dataset Upload / Paste & Auto-Schema Normalizer (JSONL / CSV / JSON) */}
+      <section className="bg-[#111827] border border-slate-800/90 rounded-lg p-5 space-y-4">
+        <div className="flex flex-col lg:flex-row lg:items-center justify-between gap-4 pb-3 border-b border-slate-800/80">
+          <div>
+            <h2 className="text-base font-semibold text-slate-100">
+              09. Custom Dataset Upload / Raw Paste &amp; Auto-Schema Normalizer (JSONL · JSON · CSV)
+            </h2>
+            <p className="text-xs text-slate-400 mt-0.5">
+              Drop a local .jsonl, .json, or .csv file or paste proprietary logs below to auto-normalize into {targetFormat.toUpperCase()} and append to your active blend
+            </p>
+          </div>
+
+          <div className="flex flex-wrap items-center gap-2.5">
+            <input
+              type="text"
+              aria-label="Custom Dataset Source Tag"
+              value={customSourceLabel}
+              onChange={(e) => setCustomSourceLabel(e.target.value)}
+              className="bg-[#0B0F17] border border-slate-800 rounded-lg px-3 py-1.5 text-xs font-mono text-slate-200 w-64"
+            />
+            <label className="inline-flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium text-slate-200 bg-slate-800 hover:bg-slate-700 border border-slate-700 rounded-lg cursor-pointer transition-colors">
+              <CloudUpload className="w-3.5 h-3.5 text-blue-400" />
+              <span>Upload .JSONL / .CSV File</span>
+              <input
+                type="file"
+                accept=".jsonl,.json,.csv,.txt"
+                className="sr-only"
+                onChange={(e) => {
+                  const file = e.target.files?.[0];
+                  if (!file) return;
+                  setCustomSourceLabel(`LocalFile/${file.name}`);
+                  const reader = new FileReader();
+                  reader.onload = () => {
+                    if (typeof reader.result === 'string') {
+                      setCustomRawText(reader.result);
+                    }
+                  };
+                  reader.readAsText(file);
+                }}
+              />
+            </label>
+          </div>
+        </div>
+
+        <div className="grid grid-cols-1 lg:grid-cols-12 gap-4 items-stretch">
+          <div className="lg:col-span-7 flex flex-col space-y-2">
+            <label htmlFor="custom-raw-paste" className="text-xs font-mono text-slate-400">
+              Raw JSONL / JSON Array / CSV Input ({customParsePreview.detectedFormat} Auto-Detected):
+            </label>
+            <textarea
+              id="custom-raw-paste"
+              rows={5}
+              value={customRawText}
+              onChange={(e) => setCustomRawText(e.target.value)}
+              className="w-full bg-[#0B0F17] border border-slate-800 rounded-lg p-3 text-xs font-mono text-slate-100 leading-relaxed"
+            />
+          </div>
+
+          <div className="lg:col-span-5 bg-[#0B0F17] border border-slate-800 rounded-lg p-4 flex flex-col justify-between space-y-3">
+            <div className="space-y-2 text-xs font-mono">
+              <div className="flex items-center justify-between pb-2 border-b border-slate-800">
+                <span className="text-slate-400">Detected Schema Format:</span>
+                <span className="text-emerald-400 font-semibold">
+                  {customParsePreview.detectedFormat}
+                </span>
+              </div>
+              <div className="flex items-center justify-between">
+                <span className="text-slate-400">Valid Normalized Rows:</span>
+                <span className="text-slate-100 font-semibold">
+                  {customParsePreview.parsedSamples.length} record(s)
+                </span>
+              </div>
+              <div className="flex items-center justify-between">
+                <span className="text-slate-400">Target Serialization:</span>
+                <span className="text-blue-400">{targetFormat.toUpperCase()}</span>
+              </div>
+              <p className="text-[11px] text-slate-400 pt-1">
+                {customParsePreview.summaryMessage}
+              </p>
+              {customImportBanner && (
+                <div className="text-xs text-emerald-400 pt-1">{customImportBanner}</div>
+              )}
+            </div>
+
+            <button
+              type="button"
+              onClick={() => {
+                if (customParsePreview.parsedSamples.length > 0) {
+                  onAppendSamples?.(
+                    customParsePreview.parsedSamples,
+                    customParsePreview.summaryMessage
+                  );
+                  setCustomImportBanner(
+                    `Appended ${customParsePreview.parsedSamples.length} normalized custom sample(s) from ${customSourceLabel} into active corpus.`
+                  );
+                }
+              }}
+              className="w-full inline-flex items-center justify-center gap-1.5 px-3.5 py-2 text-xs font-medium text-white bg-emerald-600 hover:bg-emerald-500 rounded-lg transition-colors"
+            >
+              <Plus className="w-3.5 h-3.5" />
+              Append {customParsePreview.parsedSamples.length} Normalized Custom Record(s) to Active Corpus
+            </button>
           </div>
         </div>
       </section>

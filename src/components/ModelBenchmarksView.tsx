@@ -30,6 +30,7 @@ import {
   buildRadarChartComparisonData,
   compareBaseAndFineTuned,
   generateArenaComparisonResponse,
+  runAutomatedRedTeamStressSuite,
 } from '../lib/pipelineLogic';
 import { RegisteredModel } from '../data/initialPipelineData';
 import { InfoTooltip } from './InfoTooltip';
@@ -133,6 +134,14 @@ export const ModelBenchmarksView: React.FC<ModelBenchmarksViewProps> = ({
   const arenaResponse = generateArenaComparisonResponse({
     prompt: arenaCustomPrompt,
     presetCategory: arenaPreset,
+    modelName: selectedModel.name,
+    architecture: selectedModel.architecture,
+    paramsBillions: selectedModel.paramsBillions,
+    stage2Aligned: true,
+  });
+
+  const [redTeamNotice, setRedTeamNotice] = useState<string | null>(null);
+  const redTeamReport = runAutomatedRedTeamStressSuite({
     modelName: selectedModel.name,
     architecture: selectedModel.architecture,
     paramsBillions: selectedModel.paramsBillions,
@@ -1111,6 +1120,98 @@ export const ModelBenchmarksView: React.FC<ModelBenchmarksViewProps> = ({
           </div>
         </div>
       </section>
+
+      {/* Section 06: Automated Red-Teaming, Hallucination & Edge-Case Stress-Test Matrix */}
+      <section className="bg-[#111827] border border-slate-800/90 rounded-lg p-5 space-y-4">
+        <div className="flex flex-col lg:flex-row lg:items-center justify-between gap-4 pb-4 border-b border-slate-800/80">
+          <div>
+            <h2 className="text-base font-semibold text-slate-100 flex items-center">
+              <span>06. Automated Red-Teaming, Hallucination &amp; Edge-Case Stress-Test Matrix</span>
+              <InfoTooltip termKey="redTeamSuite" align="left" />
+            </h2>
+            <p className="text-xs text-slate-400 mt-0.5">
+              Adversarial prompt injection, truncated JSON recovery, fake-API hallucination traps, and n-gram repetition stress probes
+            </p>
+          </div>
+
+          <div className="flex items-center gap-3 font-mono text-xs tabular-nums">
+            <div className="bg-[#0B0F17] border border-slate-800 rounded-lg px-3 py-1.5">
+              <span className="text-slate-400">Base Resilience: </span>
+              <strong className="text-amber-400">{redTeamReport.baseResilienceScorePct}%</strong>
+            </div>
+            <div className="bg-[#0B0F17] border border-emerald-500/40 rounded-lg px-3 py-1.5">
+              <span className="text-slate-400">Fine-Tuned Resilience: </span>
+              <strong className="text-emerald-400">
+                {redTeamReport.fineTunedResilienceScorePct}% ({redTeamReport.passedProbeCount}/
+                {redTeamReport.totalProbeCount} Passed)
+              </strong>
+            </div>
+          </div>
+        </div>
+
+        {redTeamNotice && (
+          <div
+            role="status"
+            className="bg-emerald-950/30 border border-emerald-500/40 rounded-lg px-3.5 py-2 text-xs font-mono text-emerald-300"
+          >
+            {redTeamNotice}
+          </div>
+        )}
+
+        <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
+          {redTeamReport.probes.map((probe) => (
+            <div
+              key={probe.id}
+              className="bg-[#0B0F17] border border-slate-800 rounded-lg p-4 flex flex-col justify-between space-y-3"
+            >
+              <div className="space-y-2">
+                <div className="flex flex-wrap items-center justify-between gap-2">
+                  <div>
+                    <div className="text-xs font-semibold text-slate-100">{probe.title}</div>
+                    <div className="text-[10px] font-mono text-slate-400">
+                      Category: {probe.category}
+                    </div>
+                  </div>
+                  <div className="flex items-center gap-1.5 font-mono text-[10px]">
+                    <span className="px-2 py-0.5 rounded bg-amber-500/15 text-amber-400">
+                      Base: {probe.baseStatus}
+                    </span>
+                    <span className="px-2 py-0.5 rounded bg-emerald-500/15 text-emerald-400">
+                      FT: {probe.fineTunedStatus}
+                    </span>
+                  </div>
+                </div>
+
+                <div className="p-2.5 rounded bg-[#111827] border border-slate-800/90 text-[11px] font-mono text-slate-300">
+                  Prompt: &ldquo;{probe.adversarialPrompt}&rdquo;
+                </div>
+
+                <div className="space-y-1 text-[11px] font-mono">
+                  <div className="text-amber-400">[-] Base: {probe.baseFailureSummary}</div>
+                  <div className="text-emerald-400">[+] Fine-Tuned: {probe.fineTunedDefenseSummary}</div>
+                </div>
+              </div>
+
+              <div className="pt-2.5 border-t border-slate-800/80 flex justify-end">
+                <button
+                  type="button"
+                  onClick={() => {
+                    onSendFlaggedPromptToDatasetStudio?.(probe.correctiveSampleDraft);
+                    setRedTeamNotice(
+                      `Appended corrective hardening sample for "${probe.title}" (${probe.correctiveSampleDraft.domainTag}) to Dataset Studio corpus.`
+                    );
+                  }}
+                  className="inline-flex items-center gap-1.5 px-3 py-1.5 text-xs font-mono font-medium text-slate-200 bg-slate-800 hover:bg-slate-700 border border-slate-700 rounded transition-colors"
+                >
+                  <Plus className="w-3.5 h-3.5 text-emerald-400" />
+                  Add Hardening Sample to Dataset Studio
+                </button>
+              </div>
+            </div>
+          ))}
+        </div>
+      </section>
     </div>
   );
 };
+

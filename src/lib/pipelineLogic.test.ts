@@ -28,6 +28,16 @@ import {
   computeTokenLengthHistogramAndTruncation,
   generateArenaComparisonResponse,
   diffExperimentSnapshots,
+  computeImatrixQuantizationCalibration,
+  computeGrpoVerifiableRewardPlan,
+  buildCurriculumPacingPlan,
+  computeLayerWiseAdaptiveLoraPlan,
+  inspectTokenizerAndChatTemplate,
+  parseCustomDatasetUploadText,
+  runAutomatedRedTeamStressSuite,
+  generateLocalInferenceAndSdkBundle,
+  simulateHardwareAndEdgeTargets,
+  filterCommandPaletteActions,
 } from './pipelineLogic.ts';
 import { CURATED_DATASET_BLENDS } from '../data/curatedDatasetBlends.ts';
 import { ML_GLOSSARY } from './glossaryData.ts';
@@ -813,4 +823,159 @@ test('generateArenaComparisonResponse and diffExperimentSnapshots produce accura
   assert.equal(diff.humanEvalDelta, 6.1);
   assert.ok(diff.changedHyperparameters.length >= 3);
 });
+
+test('computeImatrixQuantizationCalibration recovers quantization perplexity degradation and protects salient layers', () => {
+  const cal = computeImatrixQuantizationCalibration({
+    modelId: 'LiquidAI/LFM2.5-1.2B-Instruct',
+    modelName: 'LFM2.5-1.2B-Instruct',
+    architecture: 'LFM2.5',
+    paramsBillions: 1.2,
+    basePerplexity: 4.82,
+    quantType: 'Q4_K_M',
+    calibrationSamplesCount: 256,
+    protectSalientLayers: true,
+    datasetSourceLabel: 'Qwen/Qwen3-Code-Reasoning-110k',
+  });
+
+  assert.ok(cal.imatrixQuantPerplexity < cal.naiveQuantPerplexity);
+  assert.ok(cal.imatrixQuantPerplexity > cal.fp16Perplexity);
+  assert.ok(cal.perplexityRecoveryPct >= 70);
+  assert.ok(cal.calibrationCliPipeline.includes('llama-imatrix'));
+  assert.ok(cal.calibrationCliPipeline.includes('--output-tensor-type q8_0'));
+});
+
+test('computeGrpoVerifiableRewardPlan calculates zero Critic VRAM overhead and generates TRL GRPO script', () => {
+  const grpo = computeGrpoVerifiableRewardPlan({
+    enabled: true,
+    modelId: 'Qwen/Qwen3.5-2B-Instruct',
+    modelName: 'Qwen3.5-2B-Instruct',
+    paramsBillions: 2.0,
+    groupRolloutSize: 8,
+    klBeta: 0.04,
+    activeVerifiers: ['json_schema', 'python_pytest', 'math_symbolic'],
+  });
+
+  assert.equal(grpo.criticVramOverheadGb, 0);
+  assert.ok(grpo.projectedHumanEvalGain > 3.0);
+  assert.ok(grpo.projectedGsm8kGain > 3.5);
+  assert.equal(grpo.rewardTrajectory.length, 5);
+  assert.ok(grpo.trlGrpoScriptPy.includes('GRPOTrainer'));
+});
+
+test('buildCurriculumPacingPlan, computeLayerWiseAdaptiveLoraPlan, and inspectTokenizerAndChatTemplate work accurately', () => {
+  const s1 = normalizeDatasetRecord(
+    { instruction: 'Short prompt', input: '', output: 'Short answer' },
+    'test/short',
+    0,
+    'chatml'
+  );
+  const s2 = normalizeDatasetRecord(
+    {
+      instruction: 'Complex multi-step problem',
+      input: '',
+      output: '<think>\nStep 1... Step 2... Step 3...\n</think>\ndef solve():\n    return 42',
+    },
+    'test/long',
+    1,
+    'chatml'
+  );
+
+  const curriculum = buildCurriculumPacingPlan({
+    samples: [s2, s1],
+    strategy: 'hybrid_ifd_length',
+    totalSteps: 600,
+  });
+  assert.equal(curriculum.phases.length, 3);
+  assert.equal(curriculum.orderedSamples[0].id, s1.id);
+
+  const dora = computeLayerWiseAdaptiveLoraPlan({
+    architecture: 'Qwen3.5',
+    paramsBillions: 2.0,
+    baseRank: 32,
+    baseAlpha: 64,
+    useDora: true,
+    useRsLora: true,
+    allocationPolicy: 'svd_salience',
+  });
+  assert.equal(dora.layerQuartiles.length, 4);
+  assert.ok(dora.peftConfigSnippet.includes('use_dora=True'));
+  assert.ok(dora.projectedMmluGainPct >= 2.5);
+
+  const tokDiag = inspectTokenizerAndChatTemplate({
+    architecture: 'Qwen3.5',
+    modelName: 'Qwen3.5-2B-Instruct',
+    targetFormat: 'chatml',
+    injectReasoningTokens: true,
+    injectToolTokens: true,
+  });
+  assert.equal(tokDiag.isEosAligned, true);
+  assert.equal(tokDiag.requiresResizeTokenEmbeddings, true);
+  assert.ok(tokDiag.surgeryScriptPy.includes('resize_token_embeddings'));
+});
+
+test('parseCustomDatasetUploadText, runAutomatedRedTeamStressSuite, generateLocalInferenceAndSdkBundle, simulateHardwareAndEdgeTargets, and filterCommandPaletteActions work end-to-end', () => {
+  const jsonlInput = `{"instruction": "Convert 10C to F", "output": "50F"}\n{"instruction": "Write JSON", "output": "{\\"ok\\": true}"}`;
+  const parsed = parseCustomDatasetUploadText({
+    rawText: jsonlInput,
+    sourceLabel: 'UserUpload/custom.jsonl',
+    targetFormat: 'chatml',
+  });
+  assert.equal(parsed.detectedFormat, 'JSONL');
+  assert.equal(parsed.parsedSamples.length, 2);
+
+  const redTeam = runAutomatedRedTeamStressSuite({
+    modelName: 'Qwen3.5-2B-Instruct',
+    architecture: 'Qwen3.5',
+    paramsBillions: 2.0,
+    stage2Aligned: true,
+  });
+  assert.equal(redTeam.totalProbeCount, 4);
+  assert.equal(redTeam.passedProbeCount, 4);
+  assert.ok(redTeam.fineTunedResilienceScorePct > redTeam.baseResilienceScorePct);
+
+  const sdk = generateLocalInferenceAndSdkBundle({
+    modelName: 'Qwen3.5-2B-Instruct',
+    checkpointTag: 'ft-qwen3.5-2b-r32',
+    exportFormat: 'GGUF-Q4_K_M',
+    contextWindow: 8192,
+    port: 8080,
+    temperature: 0.2,
+    repeatPenalty: 1.08,
+    runtime: 'llama_cpp',
+  });
+  assert.ok(sdk.serverLaunchCommand.includes('llama-server'));
+  assert.ok(sdk.pythonSdkSnippet.includes('OpenAI'));
+
+  const hwSim = simulateHardwareAndEdgeTargets({
+    paramsBillions: 1.2,
+    architecture: 'LFM2.5',
+    quantization: 'qlora-4bit',
+    contextLength: 4096,
+    trainingGpuId: 'rtx3060-12gb',
+    edgeDeviceId: 'macbook-air-m2-8gb',
+  });
+  assert.equal(hwSim.trainingProfile.fitsInVram, true);
+  assert.ok(hwSim.edgeProfile.tokPerSecQ4Km > hwSim.edgeProfile.tokPerSecFp16);
+
+  const filteredActions = filterCommandPaletteActions(
+    [
+      {
+        id: 'nav-datasets',
+        title: 'Go to Dataset Studio',
+        category: 'NAVIGATION',
+        keywords: ['dataset', 'curriculum', 'upload'],
+      },
+      {
+        id: 'act-grpo',
+        title: 'Run Stage 3 GRPO Verifier Pass',
+        category: 'PIPELINE_ACTION',
+        keywords: ['grpo', 'rlvr', 'reward'],
+      },
+    ],
+    'grpo'
+  );
+  assert.equal(filteredActions.length, 1);
+  assert.equal(filteredActions[0].id, 'act-grpo');
+});
+
 

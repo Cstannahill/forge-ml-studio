@@ -10,10 +10,12 @@ import {
 } from 'lucide-react';
 import {
   ArchitectureFamily,
+  LocalInferenceRuntime,
   LoggingFramework,
   QuantizationMode,
   estimateVramRequirements,
   generateContainerArtifacts,
+  generateLocalInferenceAndSdkBundle,
 } from '../lib/pipelineLogic';
 import {
   CLOUD_PROVIDER_GUIDES,
@@ -46,6 +48,26 @@ export const CloudAndContainerView: React.FC<CloudAndContainerViewProps> = ({
     'dockerfile' | 'compose' | 'launch'
   >('dockerfile');
   const [copiedKey, setCopiedKey] = useState<string>('');
+
+  // Local Inference Endpoint Launcher & Client SDK Generator State
+  const [localRuntime, setLocalRuntime] = useState<LocalInferenceRuntime>('llama_cpp');
+  const [localPort, setLocalPort] = useState<number>(8080);
+  const [localTemperature, setLocalTemperature] = useState<number>(0.2);
+  const [localRepeatPenalty, setLocalRepeatPenalty] = useState<number>(1.08);
+  const [sdkLangTab, setSdkLangTab] = useState<'python' | 'typescript' | 'curl'>('python');
+
+  const localInferenceBundle = generateLocalInferenceAndSdkBundle({
+    modelName: selectedModel.name,
+    checkpointTag:
+      selectedModel.fineTunedCheckpointId ??
+      `ft-${selectedModel.name.toLowerCase().replace(/[^a-z0-9.-]+/g, '-')}`,
+    exportFormat: 'GGUF-Q4_K_M',
+    contextWindow: contextLength,
+    port: localPort,
+    temperature: localTemperature,
+    repeatPenalty: localRepeatPenalty,
+    runtime: localRuntime,
+  });
 
   const vramEstimate = estimateVramRequirements({
     paramsBillions: selectedModel.paramsBillions,
@@ -422,6 +444,194 @@ export const CloudAndContainerView: React.FC<CloudAndContainerViewProps> = ({
           ))}
         </div>
       </section>
+
+      {/* Section 04: Local Inference Endpoint Launcher & Client SDK Snippet Generator */}
+      <section className="bg-[#111827] border border-slate-800/90 rounded-lg p-5 space-y-5">
+        <div className="flex flex-col lg:flex-row lg:items-center justify-between gap-4 pb-4 border-b border-slate-800/80">
+          <div>
+            <h2 className="text-base font-semibold text-slate-100">
+              04. Local Inference Endpoint Launcher &amp; OpenAI-Compatible Client SDK Generator
+            </h2>
+            <p className="text-xs text-slate-400 mt-0.5">
+              Serve your exported Safetensors / GGUF-Q4_K_M checkpoint locally via Ollama, llama.cpp, vLLM, or LM Studio and call it from Python, TypeScript, or cURL
+            </p>
+          </div>
+
+          <div className="flex flex-wrap items-center gap-1 p-1 bg-[#0B0F17] border border-slate-800 rounded-lg">
+            {(
+              [
+                { id: 'llama_cpp', label: 'llama.cpp Server' },
+                { id: 'ollama', label: 'Ollama' },
+                { id: 'vllm', label: 'vLLM' },
+                { id: 'lm_studio', label: 'LM Studio CLI' },
+              ] as Array<{ id: LocalInferenceRuntime; label: string }>
+            ).map((rt) => (
+              <button
+                key={rt.id}
+                type="button"
+                onClick={() => setLocalRuntime(rt.id)}
+                className={`px-3 py-1.5 text-xs font-medium rounded transition-colors whitespace-nowrap shrink-0 ${
+                  localRuntime === rt.id
+                    ? 'bg-blue-600 text-white'
+                    : 'text-slate-400 hover:text-slate-200'
+                }`}
+              >
+                {rt.label}
+              </button>
+            ))}
+          </div>
+        </div>
+
+        {/* Sampling & Endpoint Controls */}
+        <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
+          <div>
+            <label htmlFor="local-port-input" className="block text-xs text-slate-400 mb-1">
+              Local HTTP Server Port
+            </label>
+            <input
+              id="local-port-input"
+              type="number"
+              value={localPort}
+              onChange={(e) => setLocalPort(Number(e.target.value) || 8080)}
+              className="w-full bg-[#0B0F17] border border-slate-800 rounded px-2.5 py-1.5 text-xs font-mono text-slate-100"
+            />
+          </div>
+          <div>
+            <label htmlFor="local-temp-select" className="block text-xs text-slate-400 mb-1">
+              Sampling Temperature
+            </label>
+            <select
+              id="local-temp-select"
+              value={localTemperature}
+              onChange={(e) => setLocalTemperature(Number(e.target.value))}
+              className="w-full bg-[#0B0F17] border border-slate-800 rounded px-2.5 py-1.5 text-xs font-mono text-slate-100"
+            >
+              <option value={0.0}>0.0 (Deterministic JSON / Code)</option>
+              <option value={0.2}>0.2 (Recommended Sub-2B CoT)</option>
+              <option value={0.6}>0.6 (Balanced Creative / Chat)</option>
+            </select>
+          </div>
+          <div>
+            <label htmlFor="local-rep-select" className="block text-xs text-slate-400 mb-1">
+              Repeat Penalty (Sub-2B Loop Guard)
+            </label>
+            <select
+              id="local-rep-select"
+              value={localRepeatPenalty}
+              onChange={(e) => setLocalRepeatPenalty(Number(e.target.value))}
+              className="w-full bg-[#0B0F17] border border-slate-800 rounded px-2.5 py-1.5 text-xs font-mono text-slate-100"
+            >
+              <option value={1.05}>1.05 (Gentle)</option>
+              <option value={1.08}>1.08 (Recommended Sub-2B)</option>
+              <option value={1.15}>1.15 (Strict Anti-Loop)</option>
+            </select>
+          </div>
+        </div>
+
+        {/* Two-Column Server Launch vs Client SDK Snippets */}
+        <div className="grid grid-cols-1 lg:grid-cols-12 gap-6">
+          {/* Left 5 cols: Server Launch Command */}
+          <div className="lg:col-span-5 bg-[#0B0F17] border border-slate-800 rounded-lg p-4 flex flex-col justify-between space-y-3">
+            <div className="space-y-2">
+              <div className="flex items-center justify-between pb-2 border-b border-slate-800">
+                <span className="text-xs font-semibold text-slate-200">
+                  1. Start Local Inference Server
+                </span>
+                <button
+                  type="button"
+                  onClick={() =>
+                    handleCopy(localInferenceBundle.serverLaunchCommand, 'local-srv')
+                  }
+                  className="inline-flex items-center gap-1 px-2.5 py-1 text-[11px] font-mono text-slate-200 bg-slate-800 hover:bg-slate-700 rounded transition-colors"
+                >
+                  {copiedKey === 'local-srv' ? (
+                    <>
+                      <Check className="w-3 h-3 text-emerald-400" />
+                      Copied
+                    </>
+                  ) : (
+                    <>
+                      <Copy className="w-3 h-3" />
+                      Copy Server Command
+                    </>
+                  )}
+                </button>
+              </div>
+              <pre className="font-mono text-[11px] text-emerald-300 overflow-x-auto whitespace-pre leading-relaxed pt-1">
+                {localInferenceBundle.serverLaunchCommand}
+              </pre>
+            </div>
+            <div className="pt-2 border-t border-slate-800 text-[11px] font-mono text-slate-400">
+              Endpoint: http://localhost:{localRuntime === 'ollama' ? 11434 : localPort}/v1
+            </div>
+          </div>
+
+          {/* Right 7 cols: Client SDK Snippet (Python / TypeScript / cURL) */}
+          <div className="lg:col-span-7 bg-[#0B0F17] border border-slate-800 rounded-lg p-4 flex flex-col justify-between space-y-3">
+            <div className="space-y-2">
+              <div className="flex flex-wrap items-center justify-between gap-2 pb-2 border-b border-slate-800">
+                <div className="flex items-center gap-1">
+                  {(
+                    [
+                      { id: 'python', label: 'Python (openai SDK)' },
+                      { id: 'typescript', label: 'TypeScript (fetch)' },
+                      { id: 'curl', label: 'cURL CLI' },
+                    ] as const
+                  ).map((tab) => (
+                    <button
+                      key={tab.id}
+                      type="button"
+                      onClick={() => setSdkLangTab(tab.id)}
+                      className={`px-2.5 py-1 text-[11px] font-mono rounded transition-colors ${
+                        sdkLangTab === tab.id
+                          ? 'bg-blue-600 text-white font-semibold'
+                          : 'text-slate-400 hover:text-slate-200'
+                      }`}
+                    >
+                      {tab.label}
+                    </button>
+                  ))}
+                </div>
+
+                <button
+                  type="button"
+                  onClick={() => {
+                    const snippet =
+                      sdkLangTab === 'python'
+                        ? localInferenceBundle.pythonSdkSnippet
+                        : sdkLangTab === 'typescript'
+                        ? localInferenceBundle.typescriptSdkSnippet
+                        : localInferenceBundle.curlSnippet;
+                    handleCopy(snippet, 'local-sdk');
+                  }}
+                  className="inline-flex items-center gap-1 px-2.5 py-1 text-[11px] font-mono text-slate-200 bg-slate-800 hover:bg-slate-700 rounded transition-colors"
+                >
+                  {copiedKey === 'local-sdk' ? (
+                    <>
+                      <Check className="w-3 h-3 text-emerald-400" />
+                      Copied Snippet
+                    </>
+                  ) : (
+                    <>
+                      <Copy className="w-3 h-3" />
+                      Copy Client Snippet
+                    </>
+                  )}
+                </button>
+              </div>
+
+              <pre className="font-mono text-[11px] text-slate-200 overflow-x-auto whitespace-pre leading-relaxed pt-1">
+                {sdkLangTab === 'python'
+                  ? localInferenceBundle.pythonSdkSnippet
+                  : sdkLangTab === 'typescript'
+                  ? localInferenceBundle.typescriptSdkSnippet
+                  : localInferenceBundle.curlSnippet}
+              </pre>
+            </div>
+          </div>
+        </div>
+      </section>
     </div>
   );
 };
+

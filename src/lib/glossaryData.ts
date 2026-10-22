@@ -281,6 +281,66 @@ export const ML_GLOSSARY: Record<string, GlossaryTermEntry> = {
       'Prevents late-epoch overfitting (common in 0.8B–2B models around Epoch 2.0+) and guarantees your exported Safetensors/GGUF checkpoint comes from the peak generalization step.',
     idealDirection: 'Patience = 2–3 eval steps · Min Delta = 0.005',
   },
+  imatrixCalibration: {
+    key: 'imatrixCalibration',
+    term: 'Activation-Aware Importance Matrix (imatrix) Calibration',
+    category: 'FORMAT',
+    whatItIs:
+      'Computes per-tensor activation magnitudes across 128–512 domain samples before quantizing FP16 weights to GGUF Q4_K_M / IQ4_XS, protecting salient outlier channels from rounding error.',
+    whatItTellsUs:
+      'Sub-2B models (0.3B–2B) suffer steep perplexity spikes under naive 4-bit quantization. Calibrating an imatrix on your active Dataset Studio blend recovers 70%–85% of lost quantization accuracy.',
+    idealDirection: 'Recover >= 75% Q4_K_M PPL loss · Protect embed/lm_head/SSM projections',
+  },
+  grpoRlvr: {
+    key: 'grpoRlvr',
+    term: 'Stage 3 GRPO (Group Relative Policy Optimization) & Verifiable Rewards',
+    category: 'HYPERPARAMETER',
+    whatItIs:
+      'Critic-free reinforcement learning (used in DeepSeek-R1) that samples G completions per prompt and computes advantage relative to the group mean using deterministic code/math/JSON verifiers.',
+    whatItTellsUs:
+      'Requires 0 GB of extra Critic-model VRAM while teaching sub-2B models to self-verify JSON schemas, pass pytest unit tests, and solve multi-step math problems reliably.',
+    idealDirection: 'Rollout G = 4–8 · KL Beta = 0.04 · Verifier Pass Rate >= 90%',
+  },
+  curriculumLearning: {
+    key: 'curriculumLearning',
+    term: '3-Phase Curriculum Pacing & Annealing Scheduler',
+    category: 'HYPERPARAMETER',
+    whatItIs:
+      'Orders training samples from low-IFD short syntax alignment (Phase 1 Warmup) to multi-turn domain blends (Phase 2 Core) to high-IFD <think> traces during WSD learning-rate decay (Phase 3 Annealing).',
+    whatItTellsUs:
+      'Prevents early gradient spikes in sub-2B models by establishing formatting stability before introducing dense multi-step reasoning chains.',
+    idealDirection: 'Warmup (0–30%) -> Core (30–80%) -> CoT Annealing (80–100%)',
+  },
+  doraRankAllocation: {
+    key: 'doraRankAllocation',
+    term: 'DoRA (Weight-Decomposed LoRA) & Layer-Wise SVD Rank Allocation',
+    category: 'ARCHITECTURE',
+    whatItIs:
+      'Decomposes pretrained weights into magnitude and direction vectors (DoRA) while allocating higher LoRA ranks (r=32–64) to upper reasoning/MLP layers and lower ranks (r=8–16) to shallow layers.',
+    whatItTellsUs:
+      'Concentrates trainable parameters where abstract reasoning happens, improving MMLU-Pro and HumanEval+ by +1.8% to +3.2% at the exact same adapter file size.',
+    idealDirection: 'DoRA + rsLoRA ON · Top-Heavy SVD Rank Profile',
+  },
+  tokenizerSurgery: {
+    key: 'tokenizerSurgery',
+    term: 'Tokenizer Special-Token Surgery & EOS Alignment Verifier',
+    category: 'ARCHITECTURE',
+    whatItIs:
+      'Inspects whether control tokens (<|im_start|>, <think>, <tool_call>) tokenize into single atomic IDs versus fragmented subwords, and verifies EOS/PAD alignment across Qwen3.5, LFM2.5, and Gemma4.',
+    whatItTellsUs:
+      'Prevents the #1 deployment bug in small fine-tuned models: infinite generation loops caused by unmasked or fragmented EOS / <think> tokens.',
+    idealDirection: '100% Atomic Special Tokens · Aligned EOS Token ID',
+  },
+  redTeamSuite: {
+    key: 'redTeamSuite',
+    term: 'Automated Red-Teaming & Edge-Case Stress-Test Matrix',
+    category: 'BENCHMARK',
+    whatItIs:
+      'Executes standardized adversarial probes (prompt injection, malformed JSON inputs, empty context traps, and high-temperature repetition stress tests) against Base vs. Fine-Tuned checkpoints.',
+    whatItTellsUs:
+      'Exposes brittle failure modes that aggregate benchmarks miss, and lets you convert any failed edge case into a corrective training sample in one click.',
+    idealDirection: 'Resilience Score >= 90% · 0 Repetition Loops',
+  },
 };
 
 

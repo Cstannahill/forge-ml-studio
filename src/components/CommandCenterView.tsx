@@ -26,10 +26,14 @@ import {
 import {
   AdapterMergeAlgorithm,
   EXPERIMENT_SNAPSHOTS_STORAGE_KEY,
+  EdgeDeviceTargetId,
   ExperimentSnapshot,
   GpuAlertThresholds,
+  GrpoVerifierId,
   HyperparameterConfig,
+  ImatrixQuantType,
   LoggingFramework,
+  LoraAllocationPolicy,
   PreferenceAlignmentMethod,
   SafetensorsDeploymentFormat,
   SafetensorsExportPlan,
@@ -37,8 +41,12 @@ import {
   SafetensorsRuntimeTarget,
   SpecialistAdapterInput,
   StandardizedModelCardResult,
+  TrainingGpuTargetId,
   TrialOutcome,
   buildSafetensorsExportPlan,
+  computeGrpoVerifiableRewardPlan,
+  computeImatrixQuantizationCalibration,
+  computeLayerWiseAdaptiveLoraPlan,
   computeMultiAdapterMergePlan,
   computeNextHyperparameters,
   computePackingAndMaskingMetrics,
@@ -50,6 +58,7 @@ import {
   evaluateGpuThresholds,
   generateExecutableRunBundle,
   generateStandardizedModelCard,
+  simulateHardwareAndEdgeTargets,
 } from '../lib/pipelineLogic';
 import {
   DatasetVersionCommit,
@@ -70,6 +79,8 @@ interface CommandCenterViewProps {
   onRollbackTrainingToIndex?: (stepIndex: number) => void;
   onSimulateOverfitStep?: () => void;
   onApplyStage2AlignmentBoost?: (method: PreferenceAlignmentMethod, ifEvalGain: number, mtBenchGain: number) => void;
+  onApplyStage3GrpoBoost?: (humanEvalGain: number, gsm8kGain: number, ifEvalGain: number) => void;
+  onOpenCommandPalette?: () => void;
   onRunHpoSweep: () => void;
   activeHpoConfig: HyperparameterConfig;
   onUpdateHpoConfig: (cfg: HyperparameterConfig) => void;
@@ -110,6 +121,8 @@ export const CommandCenterView: React.FC<CommandCenterViewProps> = ({
   onRollbackTrainingToIndex,
   onSimulateOverfitStep,
   onApplyStage2AlignmentBoost,
+  onApplyStage3GrpoBoost,
+  onOpenCommandPalette,
   onRunHpoSweep,
   activeHpoConfig,
   onUpdateHpoConfig,
@@ -446,6 +459,76 @@ export const CommandCenterView: React.FC<CommandCenterViewProps> = ({
     experimentSnapshots[Math.min(1, experimentSnapshots.length - 1)];
   const snapshotDiff = diffExperimentSnapshots(snapA, snapB);
 
+  // 6. Activation-Aware Importance Matrix (imatrix) & Quantization Calibration State
+  const [imatrixQuantType, setImatrixQuantType] = useState<ImatrixQuantType>('Q4_K_M');
+  const [imatrixSamplesCount, setImatrixSamplesCount] = useState<number>(256);
+  const [protectSalientLayers, setProtectSalientLayers] = useState<boolean>(true);
+  const [copiedImatrixCmd, setCopiedImatrixCmd] = useState<boolean>(false);
+
+  const imatrixPlan = computeImatrixQuantizationCalibration({
+    modelId: selectedModel.id,
+    modelName: selectedModel.name,
+    architecture: selectedModel.architecture,
+    paramsBillions: selectedModel.paramsBillions,
+    basePerplexity:
+      selectedModel.fineTunedBenchmarks?.perplexity ?? selectedModel.baseBenchmarks.perplexity,
+    quantType: imatrixQuantType,
+    calibrationSamplesCount: imatrixSamplesCount,
+    protectSalientLayers,
+    datasetSourceLabel: activeDatasetCommit.sourceDatasets[0] ?? 'Active ChatML Blend',
+  });
+
+  // 7. Stage 3 GRPO Verifiable Reward Studio (RLVR) State
+  const [grpoEnabled, setGrpoEnabled] = useState<boolean>(true);
+  const [grpoRolloutSize, setGrpoRolloutSize] = useState<4 | 8 | 16>(8);
+  const [grpoKlBeta, setGrpoKlBeta] = useState<number>(0.04);
+  const [grpoVerifiers, setGrpoVerifiers] = useState<GrpoVerifierId[]>([
+    'json_schema',
+    'python_pytest',
+    'math_symbolic',
+    'think_format_length',
+  ]);
+  const [grpoExecutedBanner, setGrpoExecutedBanner] = useState<string | null>(null);
+
+  const grpoPlan = computeGrpoVerifiableRewardPlan({
+    enabled: grpoEnabled,
+    modelId: selectedModel.id,
+    modelName: selectedModel.name,
+    paramsBillions: selectedModel.paramsBillions,
+    groupRolloutSize: grpoRolloutSize,
+    klBeta: grpoKlBeta,
+    activeVerifiers: grpoVerifiers,
+  });
+
+  // 8. Layer-Wise Adaptive LoRA (DoRA / rsLoRA / SVD Rank Allocation) State
+  const [useDora, setUseDora] = useState<boolean>(true);
+  const [useRsLora, setUseRsLora] = useState<boolean>(true);
+  const [loraAllocationPolicy, setLoraAllocationPolicy] =
+    useState<LoraAllocationPolicy>('svd_salience');
+
+  const adaptiveLoraPlan = computeLayerWiseAdaptiveLoraPlan({
+    architecture: selectedModel.architecture,
+    paramsBillions: selectedModel.paramsBillions,
+    baseRank: activeHpoConfig.loraRank,
+    baseAlpha: activeHpoConfig.loraAlpha,
+    useDora,
+    useRsLora,
+    allocationPolicy: loraAllocationPolicy,
+  });
+
+  // 9. Hardware Profile & Edge Target Simulator State
+  const [trainingGpuId, setTrainingGpuId] = useState<TrainingGpuTargetId>('rtx4090-24gb');
+  const [edgeDeviceId, setEdgeDeviceId] = useState<EdgeDeviceTargetId>('macbook-air-m2-8gb');
+
+  const hwSimResult = simulateHardwareAndEdgeTargets({
+    paramsBillions: selectedModel.paramsBillions,
+    architecture: selectedModel.architecture,
+    quantization: selectedModel.quantizationDefault,
+    contextLength: Math.min(8192, selectedModel.contextWindow),
+    trainingGpuId,
+    edgeDeviceId,
+  });
+
   const checkpointIdToExport =
     customMergedCheckpointOverride ??
     selectedModel.fineTunedCheckpointId ??
@@ -655,6 +738,17 @@ export const CommandCenterView: React.FC<CommandCenterViewProps> = ({
             <Sliders className="w-3.5 h-3.5" />
             Run HPO + Eval Trial
           </button>
+
+          {onOpenCommandPalette && (
+            <button
+              type="button"
+              onClick={onOpenCommandPalette}
+              className="inline-flex items-center gap-1.5 px-3 py-2 text-xs font-mono text-slate-200 bg-[#111827] hover:bg-slate-800 border border-slate-700/80 rounded-lg transition-colors whitespace-nowrap shrink-0"
+            >
+              <Terminal className="w-3.5 h-3.5 text-blue-400" />
+              Cmd+K
+            </button>
+          )}
         </div>
       </section>
 
@@ -2708,12 +2802,511 @@ export const CommandCenterView: React.FC<CommandCenterViewProps> = ({
         </div>
       </section>
 
+      {/* Section 09: Activation-Aware imatrix Quantization Calibration & Stage 3 GRPO Verifiable Reward Studio */}
+      <div className="grid grid-cols-1 lg:grid-cols-12 gap-6">
+        {/* Left 6 cols: Activation-Aware Importance Matrix (imatrix) & Quantization Calibration Studio */}
+        <section className="lg:col-span-6 bg-[#111827] border border-slate-800/90 rounded-lg p-5 flex flex-col justify-between space-y-4">
+          <div className="space-y-4">
+            <div className="flex flex-wrap items-center justify-between gap-2 pb-3 border-b border-slate-800/80">
+              <div>
+                <h2 className="text-base font-semibold text-slate-100 flex items-center">
+                  <span>09. Activation-Aware imatrix &amp; Quantization Calibration Studio</span>
+                  <InfoTooltip termKey="imatrixCalibration" align="left" />
+                </h2>
+                <p className="text-xs text-slate-400 mt-0.5">
+                  Protect salient outlier channels in {selectedModel.name} before GGUF quantization
+                </p>
+              </div>
+
+              <div className="flex items-center gap-1 bg-[#0B0F17] p-1 rounded-lg border border-slate-800">
+                {(['Q4_K_M', 'Q4_K_S', 'IQ4_XS', 'Q5_K_M', 'Q8_0'] as ImatrixQuantType[]).map(
+                  (qt) => (
+                    <button
+                      key={qt}
+                      type="button"
+                      onClick={() => setImatrixQuantType(qt)}
+                      className={`px-2 py-1 text-[11px] font-mono rounded transition-colors ${
+                        imatrixQuantType === qt
+                          ? 'bg-blue-600 text-white font-semibold'
+                          : 'text-slate-400 hover:text-slate-200'
+                      }`}
+                    >
+                      {qt}
+                    </button>
+                  )
+                )}
+              </div>
+            </div>
+
+            <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+              <div>
+                <label htmlFor="imatrix-samples-select" className="block text-xs text-slate-400 mb-1">
+                  Calibration Corpus Chunks
+                </label>
+                <select
+                  id="imatrix-samples-select"
+                  value={imatrixSamplesCount}
+                  onChange={(e) => setImatrixSamplesCount(Number(e.target.value))}
+                  className="w-full bg-[#0B0F17] border border-slate-800 rounded px-2.5 py-1.5 text-xs font-mono text-slate-100"
+                >
+                  <option value={128}>128 Chunks (Fast Edge Calibration)</option>
+                  <option value={256}>256 Chunks (Recommended Sub-2B)</option>
+                  <option value={512}>512 Chunks (Maximum Outlier Protection)</option>
+                </select>
+              </div>
+
+              <div className="flex items-end pb-1">
+                <label className="inline-flex items-center gap-2 text-xs text-slate-200 cursor-pointer">
+                  <input
+                    type="checkbox"
+                    checked={protectSalientLayers}
+                    onChange={(e) => setProtectSalientLayers(e.target.checked)}
+                    className="rounded border-slate-700 bg-[#0B0F17] text-blue-600"
+                  />
+                  <span>Keep embed_tokens &amp; lm_head at Q8_0</span>
+                </label>
+              </div>
+            </div>
+
+            {/* Perplexity Comparison Cards */}
+            <div className="grid grid-cols-4 gap-2 font-mono text-xs tabular-nums">
+              <div className="bg-[#0B0F17] border border-slate-800 rounded p-2.5">
+                <div className="text-[10px] text-slate-400">FP16 Baseline PPL</div>
+                <div className="text-slate-100 font-semibold mt-0.5">
+                  {imatrixPlan.fp16Perplexity}
+                </div>
+              </div>
+              <div className="bg-[#0B0F17] border border-slate-800 rounded p-2.5">
+                <div className="text-[10px] text-slate-400">Naive {imatrixQuantType}</div>
+                <div className="text-amber-400 font-semibold mt-0.5">
+                  {imatrixPlan.naiveQuantPerplexity}
+                </div>
+              </div>
+              <div className="bg-[#0B0F17] border border-slate-800 rounded p-2.5">
+                <div className="text-[10px] text-slate-400">imatrix {imatrixQuantType}</div>
+                <div className="text-emerald-400 font-semibold mt-0.5">
+                  {imatrixPlan.imatrixQuantPerplexity}
+                </div>
+              </div>
+              <div className="bg-[#0B0F17] border border-slate-800 rounded p-2.5">
+                <div className="text-[10px] text-slate-400">PPL Recovery</div>
+                <div className="text-blue-400 font-semibold mt-0.5">
+                  {imatrixPlan.perplexityRecoveryPct}%
+                </div>
+              </div>
+            </div>
+
+            {/* Protected Salient Tensors */}
+            <div className="bg-[#0B0F17] border border-slate-800 rounded-lg p-3 space-y-1.5 text-xs font-mono">
+              <div className="text-[11px] text-slate-400 flex justify-between">
+                <span>Salient Tensor Outlier Protection ({selectedModel.architecture})</span>
+                <span>Artifact: {imatrixPlan.quantizedSizeGb} GB</span>
+              </div>
+              {imatrixPlan.salientTensorsProtected.map((t) => (
+                <div
+                  key={t.tensorName}
+                  className="flex items-center justify-between text-[11px] py-1 border-t border-slate-800/70"
+                >
+                  <span className="text-slate-300 truncate">{t.tensorName}</span>
+                  <span className="text-emerald-400 shrink-0">
+                    Salience {t.activationSalienceScore} · {t.fallbackPrecision}
+                  </span>
+                </div>
+              ))}
+            </div>
+
+            <pre className="p-3 bg-[#0B0F17] border border-slate-800 rounded-lg font-mono text-[11px] text-slate-300 overflow-x-auto max-h-36 whitespace-pre leading-relaxed">
+              {imatrixPlan.calibrationCliPipeline}
+            </pre>
+          </div>
+
+          <div className="flex items-center justify-between gap-2 pt-3 border-t border-slate-800/80">
+            <span className="text-xs font-mono text-slate-400">
+              imatrix file: {imatrixPlan.imatrixArtifactSizeMb} MB
+            </span>
+            <button
+              type="button"
+              onClick={() => {
+                navigator.clipboard?.writeText(imatrixPlan.calibrationCliPipeline);
+                setCopiedImatrixCmd(true);
+                setTimeout(() => setCopiedImatrixCmd(false), 1800);
+              }}
+              className="inline-flex items-center gap-1.5 px-3.5 py-2 text-xs font-medium text-white bg-blue-600 hover:bg-blue-500 rounded-lg transition-colors"
+            >
+              {copiedImatrixCmd ? (
+                <>
+                  <Check className="w-3.5 h-3.5" />
+                  Copied imatrix Pipeline
+                </>
+              ) : (
+                <>
+                  <Copy className="w-3.5 h-3.5" />
+                  Copy imatrix CLI Pipeline
+                </>
+              )}
+            </button>
+          </div>
+        </section>
+
+        {/* Right 6 cols: Stage 3 GRPO Verifiable Reward Studio (RLVR) */}
+        <section className="lg:col-span-6 bg-[#111827] border border-slate-800/90 rounded-lg p-5 flex flex-col justify-between space-y-4">
+          <div className="space-y-4">
+            <div className="flex flex-wrap items-center justify-between gap-2 pb-3 border-b border-slate-800/80">
+              <div>
+                <h2 className="text-base font-semibold text-slate-100 flex items-center">
+                  <span>Stage 3 · GRPO Verifiable Reward Studio (RLVR)</span>
+                  <InfoTooltip termKey="grpoRlvr" align="left" />
+                </h2>
+                <p className="text-xs text-slate-400 mt-0.5">
+                  Critic-free group relative policy optimization (0 GB Critic VRAM overhead)
+                </p>
+              </div>
+
+              <div className="flex items-center gap-1 bg-[#0B0F17] p-1 rounded-lg border border-slate-800">
+                {([4, 8, 16] as const).map((g) => (
+                  <button
+                    key={g}
+                    type="button"
+                    onClick={() => setGrpoRolloutSize(g)}
+                    className={`px-2.5 py-1 text-[11px] font-mono rounded transition-colors ${
+                      grpoRolloutSize === g
+                        ? 'bg-blue-600 text-white font-semibold'
+                        : 'text-slate-400 hover:text-slate-200'
+                    }`}
+                  >
+                    G={g} Rollouts
+                  </button>
+                ))}
+              </div>
+            </div>
+
+            {/* Deterministic Verifier Checkboxes */}
+            <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
+              {(
+                [
+                  { id: 'json_schema', label: 'Strict JSON Schema Verifier (+1.5)' },
+                  { id: 'python_pytest', label: 'Python AST & Pytest Sandbox (+1.5)' },
+                  { id: 'math_symbolic', label: 'Symbolic Math Answer Matcher (+1.5)' },
+                  { id: 'think_format_length', label: '<think> XML Envelope Verifier (+1.0)' },
+                ] as Array<{ id: GrpoVerifierId; label: string }>
+              ).map((v) => {
+                const checked = grpoVerifiers.includes(v.id);
+                return (
+                  <label
+                    key={v.id}
+                    className="flex items-center gap-2 p-2.5 rounded bg-[#0B0F17] border border-slate-800 text-xs text-slate-200 cursor-pointer"
+                  >
+                    <input
+                      type="checkbox"
+                      checked={checked}
+                      onChange={(e) => {
+                        if (e.target.checked) {
+                          setGrpoVerifiers([...grpoVerifiers, v.id]);
+                        } else if (grpoVerifiers.length > 1) {
+                          setGrpoVerifiers(grpoVerifiers.filter((x) => x !== v.id));
+                        }
+                      }}
+                      className="rounded border-slate-700 bg-slate-900 text-blue-600"
+                    />
+                    <span className="truncate">{v.label}</span>
+                  </label>
+                );
+              })}
+            </div>
+
+            {/* GRPO Metrics */}
+            <div className="grid grid-cols-4 gap-2 font-mono text-xs tabular-nums">
+              <div className="bg-[#0B0F17] border border-slate-800 rounded p-2.5">
+                <div className="text-[10px] text-slate-400">Critic VRAM</div>
+                <div className="text-emerald-400 font-semibold mt-0.5">
+                  {grpoPlan.criticVramOverheadGb} GB (Free)
+                </div>
+              </div>
+              <div className="bg-[#0B0F17] border border-slate-800 rounded p-2.5">
+                <div className="text-[10px] text-slate-400">HumanEval+ Δ</div>
+                <div className="text-emerald-400 font-semibold mt-0.5">
+                  +{grpoPlan.projectedHumanEvalGain}%
+                </div>
+              </div>
+              <div className="bg-[#0B0F17] border border-slate-800 rounded p-2.5">
+                <div className="text-[10px] text-slate-400">GSM8K Δ</div>
+                <div className="text-emerald-400 font-semibold mt-0.5">
+                  +{grpoPlan.projectedGsm8kGain}%
+                </div>
+              </div>
+              <div className="bg-[#0B0F17] border border-slate-800 rounded p-2.5">
+                <div className="text-[10px] text-slate-400">Rollout VRAM</div>
+                <div className="text-blue-400 font-semibold mt-0.5">
+                  {grpoPlan.totalGrpoVramGb} GB
+                </div>
+              </div>
+            </div>
+
+            <pre className="p-3 bg-[#0B0F17] border border-slate-800 rounded-lg font-mono text-[11px] text-slate-300 overflow-x-auto max-h-36 whitespace-pre leading-relaxed">
+              {grpoPlan.trlGrpoScriptPy}
+            </pre>
+
+            {grpoExecutedBanner && (
+              <div className="text-xs font-mono text-emerald-400">{grpoExecutedBanner}</div>
+            )}
+          </div>
+
+          <div className="flex flex-wrap items-center justify-between gap-2 pt-3 border-t border-slate-800/80">
+            <span className="text-xs font-mono text-slate-400">
+              Final Pass Rate:{' '}
+              <strong className="text-emerald-400">
+                {grpoPlan.rewardTrajectory[grpoPlan.rewardTrajectory.length - 1].verifierPassRatePct}%
+              </strong>
+            </span>
+            <button
+              type="button"
+              onClick={() => {
+                onApplyStage3GrpoBoost?.(
+                  grpoPlan.projectedHumanEvalGain,
+                  grpoPlan.projectedGsm8kGain,
+                  grpoPlan.projectedIfEvalGain
+                );
+                setGrpoExecutedBanner(
+                  `Executed Stage 3 GRPO RLVR pass (G=${grpoRolloutSize}): HumanEval+ +${grpoPlan.projectedHumanEvalGain}%, GSM8K +${grpoPlan.projectedGsm8kGain}%.`
+                );
+              }}
+              className="inline-flex items-center gap-1.5 px-3.5 py-2 text-xs font-medium text-white bg-emerald-600 hover:bg-emerald-500 rounded-lg transition-colors"
+            >
+              <Zap className="w-3.5 h-3.5" />
+              Run Stage 3 GRPO Verifier Pass
+            </button>
+          </div>
+        </section>
+      </div>
+
+      {/* Section 10: Layer-Wise Adaptive LoRA (DoRA / rsLoRA) & Sub-2B Hardware / Edge Target Simulator */}
+      <div className="grid grid-cols-1 lg:grid-cols-12 gap-6">
+        {/* Left 6 cols: Layer-Wise Adaptive LoRA (DoRA / rsLoRA / SVD Rank Allocation) */}
+        <section className="lg:col-span-6 bg-[#111827] border border-slate-800/90 rounded-lg p-5 flex flex-col justify-between space-y-4">
+          <div className="space-y-4">
+            <div className="flex flex-wrap items-center justify-between gap-2 pb-3 border-b border-slate-800/80">
+              <div>
+                <h2 className="text-base font-semibold text-slate-100 flex items-center">
+                  <span>10. Layer-Wise Adaptive LoRA (DoRA / rsLoRA / SVD Rank)</span>
+                  <InfoTooltip termKey="doraRankAllocation" align="left" />
+                </h2>
+                <p className="text-xs text-slate-400 mt-0.5">
+                  Concentrate trainable rank in upper reasoning layers without bloating adapter size
+                </p>
+              </div>
+
+              <select
+                aria-label="LoRA Layer Allocation Policy"
+                value={loraAllocationPolicy}
+                onChange={(e) =>
+                  setLoraAllocationPolicy(e.target.value as LoraAllocationPolicy)
+                }
+                className="bg-[#0B0F17] border border-slate-800 rounded px-2.5 py-1.5 text-xs font-mono text-slate-100"
+              >
+                <option value="svd_salience">SVD Salience Profile (Recommended)</option>
+                <option value="top_heavy_reasoning">Top-Heavy Reasoning Quartiles</option>
+                <option value="attention_mlp_split">Attention vs. MLP Split</option>
+                <option value="uniform">Uniform Rank Across All Layers</option>
+              </select>
+            </div>
+
+            <div className="grid grid-cols-2 gap-2.5">
+              <label className="flex items-center gap-2 p-2.5 rounded bg-[#0B0F17] border border-slate-800 text-xs text-slate-200 cursor-pointer">
+                <input
+                  type="checkbox"
+                  checked={useDora}
+                  onChange={(e) => setUseDora(e.target.checked)}
+                  className="rounded border-slate-700 bg-slate-900 text-blue-600"
+                />
+                <span>Enable DoRA (Weight Decomposition)</span>
+              </label>
+              <label className="flex items-center gap-2 p-2.5 rounded bg-[#0B0F17] border border-slate-800 text-xs text-slate-200 cursor-pointer">
+                <input
+                  type="checkbox"
+                  checked={useRsLora}
+                  onChange={(e) => setUseRsLora(e.target.checked)}
+                  className="rounded border-slate-700 bg-slate-900 text-blue-600"
+                />
+                <span>Enable rsLoRA (α / √r Scaling)</span>
+              </label>
+            </div>
+
+            {/* 4-Quartile Layer Allocation Table */}
+            <div className="space-y-1.5 font-mono text-xs">
+              {adaptiveLoraPlan.layerQuartiles.map((q) => (
+                <div
+                  key={q.quartileLabel}
+                  className="p-2.5 rounded bg-[#0B0F17] border border-slate-800/90 flex flex-col sm:flex-row sm:items-center justify-between gap-2"
+                >
+                  <div>
+                    <div className="text-slate-200 font-semibold">
+                      {q.quartileLabel} ({q.layerRange})
+                    </div>
+                    <div className="text-[10px] text-slate-400">
+                      Modules: {q.primaryModules} · Sensitivity: {q.gradientSensitivity}
+                    </div>
+                  </div>
+                  <div className="text-right shrink-0">
+                    <span className="px-2 py-0.5 rounded bg-blue-600/20 text-blue-300 font-semibold">
+                      r={q.allocatedRank} · α={q.effectiveAlpha}
+                    </span>
+                    <div className="text-[10px] text-slate-400 mt-0.5">
+                      Scale: {q.scalingFactor}x
+                    </div>
+                  </div>
+                </div>
+              ))}
+            </div>
+          </div>
+
+          <div className="pt-3 border-t border-slate-800/80 flex flex-wrap items-center justify-between gap-2 text-xs font-mono">
+            <span className="text-slate-400">
+              Trainable: <strong className="text-slate-200">{adaptiveLoraPlan.trainableParamsMillions}M params</strong>
+            </span>
+            <span className="text-emerald-400">
+              Projected Lift: +{adaptiveLoraPlan.projectedMmluGainPct}% MMLU-Pro · +
+              {adaptiveLoraPlan.projectedHumanEvalGainPct}% HumanEval+
+            </span>
+          </div>
+        </section>
+
+        {/* Right 6 cols: Hardware Profile & Edge Target Simulator */}
+        <section className="lg:col-span-6 bg-[#111827] border border-slate-800/90 rounded-lg p-5 flex flex-col justify-between space-y-4">
+          <div className="space-y-4">
+            <div className="pb-3 border-b border-slate-800/80">
+              <h2 className="text-base font-semibold text-slate-100">
+                Sub-2B Training GPU &amp; Edge Inference Target Simulator
+              </h2>
+              <p className="text-xs text-slate-400 mt-0.5">
+                Simulate training VRAM headroom and local edge device throughput for {selectedModel.name}
+              </p>
+            </div>
+
+            <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+              <div>
+                <label htmlFor="sim-train-gpu" className="block text-xs text-slate-400 mb-1">
+                  Training GPU Hardware Profile
+                </label>
+                <select
+                  id="sim-train-gpu"
+                  value={trainingGpuId}
+                  onChange={(e) => setTrainingGpuId(e.target.value as TrainingGpuTargetId)}
+                  className="w-full bg-[#0B0F17] border border-slate-800 rounded px-2.5 py-1.5 text-xs font-mono text-slate-100"
+                >
+                  <option value="rtx3060-12gb">NVIDIA RTX 3060 (12 GB)</option>
+                  <option value="rtx4090-24gb">NVIDIA RTX 4090 (24 GB)</option>
+                  <option value="mac-m3-max-64gb">Apple M3 Max Unified (64 GB)</option>
+                  <option value="dual-t4-32gb">2x Cloud Tesla T4 (32 GB)</option>
+                  <option value="a100-80gb">NVIDIA A100 SXM4 (80 GB)</option>
+                </select>
+              </div>
+
+              <div>
+                <label htmlFor="sim-edge-device" className="block text-xs text-slate-400 mb-1">
+                  Local Edge Inference Target
+                </label>
+                <select
+                  id="sim-edge-device"
+                  value={edgeDeviceId}
+                  onChange={(e) => setEdgeDeviceId(e.target.value as EdgeDeviceTargetId)}
+                  className="w-full bg-[#0B0F17] border border-slate-800 rounded px-2.5 py-1.5 text-xs font-mono text-slate-100"
+                >
+                  <option value="macbook-air-m2-8gb">MacBook Air M2 (8 GB Unified)</option>
+                  <option value="rpi5-8gb">Raspberry Pi 5 (8 GB LPDDR4X)</option>
+                  <option value="iphone-16-pro-ane">iPhone 16 Pro (A18 Pro 8 GB)</option>
+                  <option value="steam-deck-oled-16gb">Steam Deck OLED APU (16 GB)</option>
+                  <option value="rtx4060-laptop-8gb">RTX 4060 Laptop (8 GB GDDR6)</option>
+                </select>
+              </div>
+            </div>
+
+            {/* Training GPU Simulation Card */}
+            <div className="bg-[#0B0F17] border border-slate-800 rounded-lg p-3.5 space-y-2 font-mono text-xs">
+              <div className="flex items-center justify-between">
+                <span className="text-slate-300 font-semibold">
+                  Training Target: {hwSimResult.trainingProfile.gpuName}
+                </span>
+                <span
+                  className={
+                    hwSimResult.trainingProfile.fitsInVram
+                      ? 'text-emerald-400 font-semibold'
+                      : 'text-red-400 font-semibold'
+                  }
+                >
+                  {hwSimResult.trainingProfile.fitsInVram ? '[FITS IN VRAM]' : '[OOM WARNING]'}
+                </span>
+              </div>
+              <div className="grid grid-cols-3 gap-2 pt-1 text-[11px] tabular-nums">
+                <div>
+                  <div className="text-slate-400">Required / Total</div>
+                  <div className="text-slate-100 font-semibold">
+                    {hwSimResult.trainingProfile.requiredVramGb} /{' '}
+                    {hwSimResult.trainingProfile.vramTotalGb} GB
+                  </div>
+                </div>
+                <div>
+                  <div className="text-slate-400">Max Safe Batch</div>
+                  <div className="text-blue-400 font-semibold">
+                    micro_batch={hwSimResult.trainingProfile.maxSafeBatchSize}
+                  </div>
+                </div>
+                <div>
+                  <div className="text-slate-400">Est. Epoch Time</div>
+                  <div className="text-emerald-400 font-semibold">
+                    {hwSimResult.trainingProfile.estimatedEpochMinutes} min/epoch
+                  </div>
+                </div>
+              </div>
+            </div>
+
+            {/* Edge Device Inference Simulation Card */}
+            <div className="bg-[#0B0F17] border border-slate-800 rounded-lg p-3.5 space-y-2 font-mono text-xs">
+              <div className="flex items-center justify-between">
+                <span className="text-slate-300 font-semibold">
+                  Edge Target: {hwSimResult.edgeProfile.deviceName}
+                </span>
+                <span className="text-blue-400 text-[11px]">
+                  TTFT: {hwSimResult.edgeProfile.firstTokenLatencyMs} ms
+                </span>
+              </div>
+              <div className="grid grid-cols-3 gap-2 pt-1 text-[11px] tabular-nums">
+                <div className="p-2 rounded bg-[#111827] border border-slate-800">
+                  <div className="text-slate-400">FP16 ({hwSimResult.edgeProfile.footprintFp16Gb} GB)</div>
+                  <div className="text-slate-200 font-semibold mt-0.5">
+                    {hwSimResult.edgeProfile.tokPerSecFp16} tok/s
+                  </div>
+                </div>
+                <div className="p-2 rounded bg-[#111827] border border-slate-800">
+                  <div className="text-slate-400">Q8_0 ({hwSimResult.edgeProfile.footprintQ8Gb} GB)</div>
+                  <div className="text-emerald-400 font-semibold mt-0.5">
+                    {hwSimResult.edgeProfile.tokPerSecQ8} tok/s
+                  </div>
+                </div>
+                <div className="p-2 rounded bg-[#111827] border border-slate-800">
+                  <div className="text-slate-400">Q4_K_M ({hwSimResult.edgeProfile.footprintQ4KmGb} GB)</div>
+                  <div className="text-emerald-400 font-semibold mt-0.5">
+                    {hwSimResult.edgeProfile.tokPerSecQ4Km} tok/s
+                  </div>
+                </div>
+              </div>
+            </div>
+          </div>
+
+          <div className="pt-3 border-t border-slate-800/80 flex items-center justify-between text-xs font-mono text-slate-400">
+            <span>Recommended Edge Deployment Format:</span>
+            <strong className="text-emerald-400">
+              {hwSimResult.edgeProfile.recommendedEdgeFormat}
+            </strong>
+          </div>
+        </section>
+      </div>
+
       {/* Centralized Logging & Telemetry Framework Stream */}
       <section className="bg-[#111827] border border-slate-800/90 rounded-lg p-5">
         <div className="flex flex-col lg:flex-row lg:items-center justify-between gap-4 pb-4 border-b border-slate-800/80">
           <div>
             <h2 className="text-base font-semibold text-slate-100">
-              09. Centralized Logging & Error-Resilient Telemetry Stream
+              11. Centralized Logging & Error-Resilient Telemetry Stream
             </h2>
             <p className="text-xs text-slate-400 mt-0.5">
               Active sink: {activeLogger.toUpperCase()} · Built-in NaN gradient recovery, OOM micro-batch backoff, and checkpoint verification
