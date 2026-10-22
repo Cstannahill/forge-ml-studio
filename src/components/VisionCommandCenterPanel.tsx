@@ -15,7 +15,9 @@ import {
   VisionPipelineHardwareConfig,
   computeVisionPipelineHardwarePlan,
 } from '../lib/visionPipelineLogic';
+import { buildVisionPythonEngineManifest } from '../lib/pipelineLogic';
 import { InfoTooltip } from './InfoTooltip';
+import { PythonEngineRunnerCard } from './PythonEngineRunnerCard';
 
 interface VisionCommandCenterPanelProps {
   visionModels: RegisteredVisionModel[];
@@ -46,8 +48,9 @@ export const VisionCommandCenterPanel: React.FC<VisionCommandCenterPanelProps> =
     minPixels: 256 * 28 * 28,
     maxPixels: 1024 * 28 * 28,
     patchSizePx: 28,
-    visionProjectorLrMultiplier: 5,
-    exportSeparateMmprojFp16: true,
+    enable2dRopeScaling: true,
+    maskImagePromptTokens: true,
+    exportMmprojFp16: true,
   });
 
   const [loraRank, setLoraRank] = useState<number>(32);
@@ -57,6 +60,24 @@ export const VisionCommandCenterPanel: React.FC<VisionCommandCenterPanelProps> =
 
   const vlmPlan = useMemo(
     () => computeVisionPipelineHardwarePlan(activeVisionModel, hwConfig, loraRank, batchSize),
+    [activeVisionModel, hwConfig, loraRank, batchSize]
+  );
+
+  const visionEngineBundle = useMemo(
+    () =>
+      buildVisionPythonEngineManifest({
+        modelId: activeVisionModel.id,
+        architecture: activeVisionModel.architecture,
+        visionEncoder: activeVisionModel.visionEncoder,
+        projectorType: activeVisionModel.projectorType,
+        freezeVisionTower: hwConfig.freezeVisionTower,
+        trainMlpProjector: hwConfig.trainMlpProjector,
+        loraRank,
+        batchSize,
+        minPixels: hwConfig.minPixels,
+        maxPixels: hwConfig.maxPixels,
+        patchSizePx: hwConfig.patchSizePx,
+      }),
     [activeVisionModel, hwConfig, loraRank, batchSize]
   );
 
@@ -373,6 +394,9 @@ export const VisionCommandCenterPanel: React.FC<VisionCommandCenterPanelProps> =
           </button>
         </div>
       </div>
+
+      {/* Real Python VLM Engine Runner (Unsloth FastVisionModel + Transformers VLM) */}
+      <PythonEngineRunnerCard bundle={visionEngineBundle} />
     </section>
   );
 };

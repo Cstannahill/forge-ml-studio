@@ -1,0 +1,35 @@
+[build-system]
+requires = ["setuptools>=68.0", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "forgeml-training-engine"
+version = "1.0.0"
+description = "Production Python Fine-Tuning, Alignment (ORPO/SimPO/DPO/GRPO), VLM Grounding & Quantization Engine for ForgeML Pipeline Studio"
+readme = "../README.md"
+requires-python = ">=3.10"
+license = { text = "Apache-2.0" }
+dependencies = [
+  "torch>=2.5.1",
+  "torchvision>=0.20.1",
+  "transformers>=4.49.0",
+  "trl>=0.15.2",
+  "peft>=0.14.0",
+  "accelerate>=1.4.0",
+  "bitsandbytes>=0.45.3",
+  "datasets>=3.3.2",
+  "safetensors>=0.5.3",
+  "Pillow>=11.1.0",
+  "qwen-vl-utils>=0.0.10",
+  "jsonschema>=4.23.0",
+  "sympy>=1.13.3",
+]
+
+[project.optional-dependencies]
+cuda = [
+  "unsloth>=2025.3.1",
+  "unsloth-zoo>=2025.3.1",
+  "triton>=3.1.0",
+  "xformers>=0.0.28.post3",
+  "mergekit>=0.0.5.1",
+]

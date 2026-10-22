@@ -1,0 +1,49 @@
+{
+  "schema": "forgeml.python_engine.text.v1",
+  "runId": "text-qwen-qwen3.5-2b-instruct-1792641304624",
+  "track": "TEXT_LLM",
+  "modelId": "Qwen/Qwen3.5-2B-Instruct",
+  "architecture": "Qwen3.5",
+  "quantizationMode": "qlora-4bit",
+  "maxSeqLength": 8192,
+  "useDora": true,
+  "useRsLora": true,
+  "epochs": 2,
+  "sampleCount": 2,
+  "datasetJsonlPath": "/app/applet/runs/text-qwen-qwen3.5-2b-instruct-1792641304624/dataset_corpus.jsonl",
+  "outputDir": "/app/applet/runs/text-qwen-qwen3.5-2b-instruct-1792641304624/checkpoints",
+  "hpoConfig": {
+    "learningRate": 0.0002,
+    "loraRank": 32,
+    "loraAlpha": 64,
+    "loraDropout": 0.05,
+    "warmupRatio": 0.05,
+    "weightDecay": 0.01,
+    "neftuneAlpha": 5,
+    "batchSize": 8,
+    "lrScheduler": "wsd"
+  },
+  "packingConfig": {
+    "enableSamplePacking": true,
+    "maskPromptTokens": true
+  },
+  "preferenceConfig": {
+    "enabled": true,
+    "method": "ORPO",
+    "beta": 0.1,
+    "learningRate": 0.000008,
+    "preferenceDatasetId": "argilla/ultrafeedback-binarized-preferences-cleaned"
+  },
+  "grpoConfig": {
+    "enabled": true,
+    "groupSize": 8,
+    "klBeta": 0.04,
+    "maxCompletionLength": 1024,
+    "verifiers": [
+      "json_schema",
+      "python_pytest",
+      "math_symbolic",
+      "think_format_length"
+    ]
+  }
+}

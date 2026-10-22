@@ -4174,8 +4174,271 @@ export function filterCommandPaletteActions(
   );
 }
 
+// ============================================================================
+// 21. REAL PYTHON ENGINE MANIFEST & SUBPROCESS LAUNCHER BUILDER
+// ============================================================================
 
+export interface PythonEngineMaterializedBundle {
+  runId: string;
+  track: 'TEXT_LLM' | 'VISION_VLM';
+  runDirRelativePath: string;
+  manifestFilename: string;
+  datasetJsonlFilename: string;
+  manifestJson: string;
+  datasetJsonlContent: string;
+  pythonTrainCommand: string;
+  pythonDryRunCommand: string;
+  pythonExportCommand: string;
+  engineBackendLabel: string;
+}
 
+export function buildTextPythonEngineManifest(input: {
+  runId?: string;
+  modelId: string;
+  architecture: ArchitectureFamily;
+  quantizationMode?: QuantizationMode;
+  maxSeqLength?: number;
+  contextWindow?: number;
+  hpoConfig: HyperparameterConfig;
+  useDora?: boolean;
+  useRsLora?: boolean;
+  samplePackingEnabled?: boolean;
+  completionOnlyLossEnabled?: boolean;
+  stage2Enabled?: boolean;
+  alignmentMethod?: PreferenceAlignmentMethod;
+  alignmentBeta?: number;
+  preferenceDataset?: string;
+  grpoEnabled?: boolean;
+  grpoRolloutSize?: number;
+  grpoKlBeta?: number;
+  grpoVerifiers?: string[];
+  packingConfig?: {
+    enableSamplePacking: boolean;
+    maskPromptTokens: boolean;
+  };
+  preferenceConfig?: {
+    enabled: boolean;
+    method: PreferenceAlignmentMethod;
+    beta: number;
+    learningRate: number;
+    preferenceDatasetId: string;
+  };
+  grpoConfig?: {
+    enabled: boolean;
+    groupSize: number;
+    klBeta: number;
+    maxCompletionLength: number;
+  };
+  samples?: Array<{
+    id: string;
+    sourceDataset: string;
+    formattedPreview: string;
+  }>;
+}): PythonEngineMaterializedBundle {
+  const slug = input.modelId.toLowerCase().replace(/[^a-z0-9.-]+/g, '-');
+  const runId = input.runId || `text-${slug}-${Date.now()}`;
+  const runDirRelativePath = `./runs/${runId}`;
+  const manifestFilename = 'training_manifest.json';
+  const datasetJsonlFilename = 'dataset_corpus.jsonl';
 
+  const resolvedSamples =
+    input.samples && input.samples.length > 0
+      ? input.samples
+      : [
+          {
+            id: 'seed-001',
+            sourceDataset: 'Qwen/Qwen3-Code-Reasoning-110k',
+            formattedPreview:
+              '<|im_start|>user\nWrite a deterministic Python JSON parser with error handling.<|im_end|>\n<|im_start|>assistant\n<think>\nValidate JSON payload with json.loads and return structured dict.\n</think>\n```python\nimport json\ndef parse_payload(raw: str) -> dict:\n    return json.loads(raw)\n```<|im_end|>',
+          },
+          {
+            id: 'seed-002',
+            sourceDataset: 'open-r1/OpenR1-Math-220k',
+            formattedPreview:
+              '<|im_start|>user\nSolve 3x + 9 = 24 step by step.<|im_end|>\n<|im_start|>assistant\n<think>\nSubtract 9 from both sides: 3x = 15. Divide by 3: x = 5.\n</think>\nx = 5<|im_end|>',
+          },
+        ];
 
+  const engineBackendLabel =
+    input.architecture === 'LFM2.5' || input.useDora
+      ? 'HuggingFace Transformers + PEFT (LFM2.5 State-Space / DoRA)'
+      : 'Unsloth FastLanguageModel + TRL (Fused Triton Kernels)';
 
+  const maxSeqLength = input.maxSeqLength ?? Math.min(8192, input.contextWindow ?? 8192);
+  const quantizationMode = input.quantizationMode ?? 'qlora-4bit';
+
+  const manifestObj = {
+    schema: 'forgeml.python_engine.text.v1',
+    runId,
+    track: 'TEXT_LLM',
+    modelId: input.modelId,
+    architecture: input.architecture,
+    quantizationMode,
+    maxSeqLength,
+    useDora: Boolean(input.useDora),
+    useRsLora: Boolean(input.useRsLora),
+    epochs: 2,
+    sampleCount: resolvedSamples.length,
+    datasetJsonlPath: `${runDirRelativePath}/${datasetJsonlFilename}`,
+    outputDir: `${runDirRelativePath}/checkpoints`,
+    hpoConfig: input.hpoConfig,
+    packingConfig: input.packingConfig ?? {
+      enableSamplePacking: input.samplePackingEnabled ?? true,
+      maskPromptTokens: input.completionOnlyLossEnabled ?? true,
+    },
+    preferenceConfig: input.preferenceConfig ?? {
+      enabled: input.stage2Enabled ?? false,
+      method: input.alignmentMethod ?? 'ORPO',
+      beta: input.alignmentBeta ?? 0.15,
+      learningRate: 8e-6,
+      preferenceDatasetId:
+        input.preferenceDataset ?? 'argilla/ultrafeedback-binarized-preferences-cleaned',
+    },
+    grpoConfig: input.grpoConfig ?? {
+      enabled: input.grpoEnabled ?? false,
+      groupSize: input.grpoRolloutSize ?? 8,
+      klBeta: input.grpoKlBeta ?? 0.04,
+      maxCompletionLength: 1024,
+      verifiers: input.grpoVerifiers ?? ['json_schema', 'python_pytest'],
+    },
+  };
+
+  const datasetJsonlContent = resolvedSamples
+    .map((s) =>
+      JSON.stringify({
+        id: s.id,
+        sourceDataset: s.sourceDataset,
+        formattedPayload: s.formattedPreview,
+      })
+    )
+    .join('\n');
+
+  const manifestPath = `${runDirRelativePath}/${manifestFilename}`;
+  return {
+    runId,
+    track: 'TEXT_LLM',
+    runDirRelativePath,
+    manifestFilename,
+    datasetJsonlFilename,
+    manifestJson: JSON.stringify(manifestObj, null, 2),
+    datasetJsonlContent,
+    pythonTrainCommand: `python3 engine/train_text_pipeline.py --config ${manifestPath}`,
+    pythonDryRunCommand: `python3 engine/train_text_pipeline.py --config ${manifestPath} --dry-run`,
+    pythonExportCommand: `python3 engine/export_and_merge.py --base-model "${input.modelId}" --adapter-dir "${runDirRelativePath}/checkpoints/stage1_sft" --out-dir "${runDirRelativePath}/exports" --quant Q4_K_M`,
+    engineBackendLabel,
+  };
+}
+
+export function buildVisionPythonEngineManifest(input: {
+  runId?: string;
+  modelId: string;
+  architecture: ArchitectureFamily;
+  visionEncoder?: string;
+  projectorType?: string;
+  quantizationMode?: QuantizationMode;
+  loraRank: number;
+  loraAlpha?: number;
+  batchSize: number;
+  learningRate?: number;
+  freezeVisionTower?: boolean;
+  trainMlpProjector?: boolean;
+  minPixels?: number;
+  maxPixels?: number;
+  patchSizePx?: number;
+  hardwareConfig?: {
+    freezeVisionTower: boolean;
+    trainMlpProjector: boolean;
+    applyLoraToLlmBackbone: boolean;
+    minPixels: number;
+    maxPixels: number;
+  };
+  samples?: Array<{
+    id: string;
+    imageUri: string;
+    instruction: string;
+    assistantOutput: string;
+    formattedPayload: string;
+    boundingBoxes?: Array<{ label: string; box2d: [number, number, number, number] }>;
+  }>;
+}): PythonEngineMaterializedBundle {
+  const slug = input.modelId.toLowerCase().replace(/[^a-z0-9.-]+/g, '-');
+  const runId = input.runId || `vision-${slug}-${Date.now()}`;
+  const runDirRelativePath = `./runs/${runId}`;
+  const manifestFilename = 'vision_manifest.json';
+  const datasetJsonlFilename = 'vision_corpus.jsonl';
+
+  const resolvedSamples =
+    input.samples && input.samples.length > 0
+      ? input.samples
+      : [
+          {
+            id: 'veil-vlm-001',
+            imageUri: 's3://veil-audit/residential_envelope_desk.jpg',
+            instruction:
+              'Audit this creator studio frame for VEIL visual privacy hazards and output JSON bounding boxes.',
+            assistantOutput:
+              '{"hazard_category": "RESIDENTIAL_GEOLOCATION", "suggested_action": "BLUR", "detections": [{"label": "mail_envelope_address", "box_2d": [412, 580, 540, 810]}]}',
+            formattedPayload:
+              '<|im_start|>user\n<|vision_start|><|image_pad|><|vision_end|>Audit this creator studio frame for VEIL visual privacy hazards and output JSON bounding boxes.<|im_end|>\n<|im_start|>assistant\n{"hazard_category": "RESIDENTIAL_GEOLOCATION", "suggested_action": "BLUR", "detections": [{"label": "mail_envelope_address", "box_2d": [412, 580, 540, 810]}]}<|im_end|>',
+            boundingBoxes: [{ label: 'mail_envelope_address', box2d: [412, 580, 540, 810] as [number, number, number, number] }],
+          },
+        ];
+
+  const hw = input.hardwareConfig ?? {
+    freezeVisionTower: input.freezeVisionTower ?? true,
+    trainMlpProjector: input.trainMlpProjector ?? true,
+    applyLoraToLlmBackbone: true,
+    minPixels: input.minPixels ?? 256 * 28 * 28,
+    maxPixels: input.maxPixels ?? 1024 * 28 * 28,
+  };
+
+  const manifestObj = {
+    schema: 'forgeml.python_engine.vision.v1',
+    runId,
+    track: 'VISION_VLM',
+    pipelineTrack: 'VISION_VLM_ISOLATED',
+    modelId: input.modelId,
+    architecture: input.architecture,
+    visionEncoder: input.visionEncoder ?? 'SigLIP-NaViT-400M',
+    projectorType: input.projectorType ?? 'Spatial-2x2-MLP-Connector',
+    quantizationMode: input.quantizationMode ?? 'qlora-4bit',
+    loraRank: input.loraRank,
+    loraAlpha: input.loraAlpha ?? input.loraRank * 2,
+    batchSize: input.batchSize,
+    learningRate: input.learningRate ?? 0.00015,
+    epochs: 2,
+    maxSeqLength: 8192,
+    sampleCount: resolvedSamples.length,
+    datasetJsonlPath: `${runDirRelativePath}/${datasetJsonlFilename}`,
+    outputDir: `${runDirRelativePath}/checkpoints`,
+    hardwareConfig: hw,
+  };
+
+  const datasetJsonlContent = resolvedSamples
+    .map((s) =>
+      JSON.stringify({
+        id: s.id,
+        image: s.imageUri,
+        instruction: s.instruction,
+        output: s.assistantOutput,
+        boundingBoxes: s.boundingBoxes ?? [],
+        formattedPayload: s.formattedPayload,
+      })
+    )
+    .join('\n');
+
+  const manifestPath = `${runDirRelativePath}/${manifestFilename}`;
+  return {
+    runId,
+    track: 'VISION_VLM',
+    runDirRelativePath,
+    manifestFilename,
+    datasetJsonlFilename,
+    manifestJson: JSON.stringify(manifestObj, null, 2),
+    datasetJsonlContent,
+    pythonTrainCommand: `python3 engine/train_vision_pipeline.py --config ${manifestPath}`,
+    pythonDryRunCommand: `python3 engine/train_vision_pipeline.py --config ${manifestPath} --dry-run`,
+    pythonExportCommand: `python3 engine/export_and_merge.py --base-model "${input.modelId}" --adapter-dir "${runDirRelativePath}/checkpoints/vlm_checkpoint" --out-dir "${runDirRelativePath}/exports" --quant Q4_K_M --mmproj`,
+    engineBackendLabel: 'Unsloth FastVisionModel + UnslothVisionDataCollator (Isolated VLM Track)',
+  };
+}

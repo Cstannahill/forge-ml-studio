@@ -1,4 +1,6 @@
 import express from 'express';
+import fs from 'fs';
+import { execSync, spawn, type ChildProcess } from 'child_process';
 import path from 'path';
 import { fileURLToPath } from 'url';
 import dotenv from 'dotenv';
@@ -676,6 +678,218 @@ Explain in simple terms:
     providerUsed: `${provider.toUpperCase()} (${providerModelName})`,
     liveModelCall: false,
     explanation,
+  });
+});
+
+// ============================================================================
+// REAL PYTHON TRAINING ENGINE BRIDGE (/engine/train_text_pipeline.py & train_vision_pipeline.py)
+// ============================================================================
+
+interface ActivePythonEngineJob {
+  runId: string;
+  track: 'TEXT_LLM' | 'VISION_VLM';
+  status: 'RUNNING' | 'COMPLETED' | 'FAILED';
+  command: string;
+  manifestDiskPath: string;
+  datasetDiskPath: string;
+  logs: string[];
+  exitCode: number | null;
+  startedAt: string;
+  process?: ChildProcess;
+}
+
+const activeEngineJobs = new Map<string, ActivePythonEngineJob>();
+
+app.get('/api/engine/preflight', (_req, res) => {
+  let pythonVersion = 'Not detected';
+  let hasTorch = false;
+  let hasCuda = false;
+  let hasUnsloth = false;
+  let hasTransformers = false;
+  let hasTrl = false;
+  let cudaDeviceName = 'CPU / Container Preview (Mount NVIDIA GPU for full CUDA training)';
+
+  try {
+    pythonVersion = execSync('python3 --version', { encoding: 'utf-8', timeout: 2000 }).trim();
+    const probeJson = execSync(
+      `python3 -c 'import json, importlib.util;
+def has(m): return importlib.util.find_spec(m) is not None
+cuda, dev = False, "CPU Only"
+if has("torch"):
+    import torch
+    cuda = bool(torch.cuda.is_available())
+    if cuda: dev = torch.cuda.get_device_name(0)
+print(json.dumps({"torch": has("torch"), "cuda": cuda, "device": dev, "unsloth": has("unsloth"), "transformers": has("transformers"), "trl": has("trl")}))'`,
+      { encoding: 'utf-8', timeout: 3500 }
+    ).trim();
+    const parsed = JSON.parse(probeJson);
+    hasTorch = Boolean(parsed.torch);
+    hasCuda = Boolean(parsed.cuda);
+    hasUnsloth = Boolean(parsed.unsloth);
+    hasTransformers = Boolean(parsed.transformers);
+    hasTrl = Boolean(parsed.trl);
+    if (parsed.device) cudaDeviceName = String(parsed.device);
+  } catch {
+    // Keep defaults if python probe times out
+  }
+
+  const textScriptExists = fs.existsSync(path.join(__dirname, 'engine', 'train_text_pipeline.py'));
+  const visionScriptExists = fs.existsSync(path.join(__dirname, 'engine', 'train_vision_pipeline.py'));
+  const exportScriptExists = fs.existsSync(path.join(__dirname, 'engine', 'export_and_merge.py'));
+
+  res.json({
+    pythonVersion,
+    hasTorch,
+    hasCuda,
+    cudaDeviceName,
+    hasUnsloth,
+    hasTransformers,
+    hasTrl,
+    engineScriptsReady: textScriptExists && visionScriptExists && exportScriptExists,
+    scripts: {
+      textPipeline: 'engine/train_text_pipeline.py',
+      visionPipeline: 'engine/train_vision_pipeline.py',
+      exportAndMerge: 'engine/export_and_merge.py',
+      requirements: 'engine/requirements.txt',
+    },
+  });
+});
+
+app.post('/api/engine/materialize-and-run', (req, res) => {
+  const {
+    runId,
+    track = 'TEXT_LLM',
+    manifestFilename = 'training_manifest.json',
+    datasetJsonlFilename = 'dataset_corpus.jsonl',
+    manifestJson = '{}',
+    datasetJsonlContent = '',
+    mode = 'dry-run',
+  } = req.body as {
+    runId?: string;
+    track?: 'TEXT_LLM' | 'VISION_VLM';
+    manifestFilename?: string;
+    datasetJsonlFilename?: string;
+    manifestJson?: string;
+    datasetJsonlContent?: string;
+    mode?: 'dry-run' | 'full-train';
+  };
+
+  const safeRunId = String(runId || `run-${Date.now()}`).replace(/[^a-zA-Z0-9._-]/g, '-');
+  const runDir = path.join(__dirname, 'runs', safeRunId);
+  fs.mkdirSync(runDir, { recursive: true });
+
+  const manifestDiskPath = path.join(runDir, manifestFilename);
+  const datasetDiskPath = path.join(runDir, datasetJsonlFilename);
+
+  // Rewrite datasetJsonlPath and outputDir inside manifestJson to absolute paths on disk
+  let finalManifestStr = manifestJson;
+  try {
+    const parsedManifest = JSON.parse(manifestJson);
+    parsedManifest.datasetJsonlPath = datasetDiskPath;
+    parsedManifest.outputDir = path.join(runDir, 'checkpoints');
+    finalManifestStr = JSON.stringify(parsedManifest, null, 2);
+  } catch {
+    // Keep original string if parse fails
+  }
+
+  fs.writeFileSync(manifestDiskPath, finalManifestStr, 'utf-8');
+  fs.writeFileSync(datasetDiskPath, datasetJsonlContent, 'utf-8');
+
+  const scriptRelPath =
+    track === 'VISION_VLM' ? 'engine/train_vision_pipeline.py' : 'engine/train_text_pipeline.py';
+  const scriptAbsPath = path.join(__dirname, scriptRelPath);
+
+  const args = [scriptAbsPath, '--config', manifestDiskPath];
+  if (mode === 'dry-run') {
+    args.push('--dry-run');
+  }
+
+  const commandStr = `python3 ${scriptRelPath} --config ./runs/${safeRunId}/${manifestFilename}${
+    mode === 'dry-run' ? ' --dry-run' : ''
+  }`;
+
+  const job: ActivePythonEngineJob = {
+    runId: safeRunId,
+    track,
+    status: 'RUNNING',
+    command: commandStr,
+    manifestDiskPath: `./runs/${safeRunId}/${manifestFilename}`,
+    datasetDiskPath: `./runs/${safeRunId}/${datasetJsonlFilename}`,
+    logs: [
+      `[NODE_ORCHESTRATOR] Materialized ${manifestFilename} and ${datasetJsonlFilename} into ./runs/${safeRunId}/`,
+      `[NODE_ORCHESTRATOR] Spawning subprocess: ${commandStr}`,
+    ],
+    exitCode: null,
+    startedAt: new Date().toISOString(),
+  };
+
+  try {
+    const child = spawn('python3', args, {
+      cwd: __dirname,
+      env: { ...process.env, PYTHONUNBUFFERED: '1' },
+    });
+    job.process = child;
+
+    child.stdout.on('data', (chunk: Buffer) => {
+      const lines = chunk
+        .toString('utf-8')
+        .split(/\r?\n/)
+        .filter((l) => l.trim().length > 0);
+      job.logs.push(...lines);
+    });
+
+    child.stderr.on('data', (chunk: Buffer) => {
+      const lines = chunk
+        .toString('utf-8')
+        .split(/\r?\n/)
+        .filter((l) => l.trim().length > 0);
+      job.logs.push(...lines.map((l) => `[STDERR] ${l}`));
+    });
+
+    child.on('close', (code) => {
+      job.exitCode = code;
+      job.status = code === 0 ? 'COMPLETED' : 'FAILED';
+      job.logs.push(`[NODE_ORCHESTRATOR] Process exited with code ${code}`);
+    });
+  } catch (err) {
+    job.status = 'FAILED';
+    job.logs.push(
+      `[NODE_ORCHESTRATOR] Failed to spawn python3: ${err instanceof Error ? err.message : String(err)}`
+    );
+  }
+
+  activeEngineJobs.set(safeRunId, job);
+
+  // Give fast --dry-run processes 250ms to flush stdout so the very first response already has logs
+  setTimeout(() => {
+    res.json({
+      runId: job.runId,
+      track: job.track,
+      status: job.status,
+      command: job.command,
+      manifestDiskPath: job.manifestDiskPath,
+      datasetDiskPath: job.datasetDiskPath,
+      logs: job.logs,
+      exitCode: job.exitCode,
+    });
+  }, 250);
+});
+
+app.get('/api/engine/status/:runId', (req, res) => {
+  const job = activeEngineJobs.get(req.params.runId);
+  if (!job) {
+    res.status(404).json({ error: 'Run ID not found' });
+    return;
+  }
+  res.json({
+    runId: job.runId,
+    track: job.track,
+    status: job.status,
+    command: job.command,
+    manifestDiskPath: job.manifestDiskPath,
+    datasetDiskPath: job.datasetDiskPath,
+    logs: job.logs,
+    exitCode: job.exitCode,
   });
 });
 

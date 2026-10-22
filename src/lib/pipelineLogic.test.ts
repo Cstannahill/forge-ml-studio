@@ -38,6 +38,8 @@ import {
   generateLocalInferenceAndSdkBundle,
   simulateHardwareAndEdgeTargets,
   filterCommandPaletteActions,
+  buildTextPythonEngineManifest,
+  buildVisionPythonEngineManifest,
 } from './pipelineLogic.ts';
 import { CURATED_DATASET_BLENDS } from '../data/curatedDatasetBlends.ts';
 import { ML_GLOSSARY } from './glossaryData.ts';
@@ -1136,7 +1138,66 @@ test('Vision Dataset Studio functions: validateVisionDatasetCorpus, cleanAndNorm
   assert.equal(calculateVisualPatchTokens(1024, 768), 1003);
 });
 
+test('buildTextPythonEngineManifest and buildVisionPythonEngineManifest generate executable Python CLI manifests and commands', () => {
+  const textBundle = buildTextPythonEngineManifest({
+    modelId: 'Qwen/Qwen3.5-2B-Instruct',
+    architecture: 'Qwen3.5',
+    contextWindow: 8192,
+    hpoConfig: {
+      learningRate: 0.0002,
+      loraRank: 32,
+      loraAlpha: 64,
+      loraDropout: 0.05,
+      warmupRatio: 0.05,
+      weightDecay: 0.01,
+      neftuneAlpha: 5,
+      batchSize: 8,
+      lrScheduler: 'wsd',
+    },
+    useDora: true,
+    useRsLora: true,
+    samplePackingEnabled: true,
+    completionOnlyLossEnabled: true,
+    stage2Enabled: true,
+    alignmentMethod: 'ORPO',
+    alignmentBeta: 0.1,
+    preferenceDataset: 'argilla/ultrafeedback-binarized-preferences-cleaned',
+    grpoEnabled: true,
+    grpoRolloutSize: 8,
+    grpoKlBeta: 0.04,
+    grpoVerifiers: ['json_schema', 'python_pytest'],
+  });
 
+  assert.equal(textBundle.track, 'TEXT_LLM');
+  assert.equal(textBundle.manifestFilename, 'training_manifest.json');
+  assert.ok(textBundle.pythonTrainCommand.includes('python3 engine/train_text_pipeline.py --config'));
+  assert.ok(textBundle.pythonDryRunCommand.includes('--dry-run'));
+  assert.ok(textBundle.pythonExportCommand.includes('python3 engine/export_and_merge.py'));
+  const parsedTextManifest = JSON.parse(textBundle.manifestJson);
+  assert.equal(parsedTextManifest.hpoConfig.loraRank, 32);
+  assert.equal(parsedTextManifest.preferenceConfig.method, 'ORPO');
+  assert.equal(parsedTextManifest.grpoConfig.enabled, true);
 
+  const visionBundle = buildVisionPythonEngineManifest({
+    modelId: 'LiquidAI/LFM2.5-VL-450M-Instruct',
+    architecture: 'LFM2.5',
+    visionEncoder: 'SigLIP-NaViT-400M',
+    projectorType: 'Spatial-2x2-MLP-Connector',
+    freezeVisionTower: true,
+    trainMlpProjector: true,
+    loraRank: 32,
+    batchSize: 8,
+    minPixels: 256 * 28 * 28,
+    maxPixels: 1024 * 28 * 28,
+    patchSizePx: 28,
+  });
 
+  assert.equal(visionBundle.track, 'VISION_VLM');
+  assert.equal(visionBundle.manifestFilename, 'vision_manifest.json');
+  assert.ok(visionBundle.pythonTrainCommand.includes('python3 engine/train_vision_pipeline.py --config'));
+  assert.ok(visionBundle.pythonExportCommand.includes('--mmproj'));
+  const parsedVisionManifest = JSON.parse(visionBundle.manifestJson);
+  assert.equal(parsedVisionManifest.pipelineTrack, 'VISION_VLM_ISOLATED');
+  assert.equal(parsedVisionManifest.hardwareConfig.freezeVisionTower, true);
+});
 

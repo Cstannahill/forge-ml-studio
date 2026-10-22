@@ -1,0 +1,29 @@
+services:
+  forgeml-studio:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: forgeml-pipeline-studio
+    ports:
+      - "3000:3000"
+      - "8080:8080"
+    environment:
+      - NODE_ENV=production
+      - PORT=3000
+      - GEMINI_API_KEY=${GEMINI_API_KEY:-}
+      - OPENROUTER_API_KEY=${OPENROUTER_API_KEY:-}
+      - LLAMA_SERVER_URL=http://localhost:8080/v1
+      - OLLAMA_HOST=http://host.docker.internal:11434
+    volumes:
+      - ./runs:/workspace/runs
+      - ./checkpoints:/workspace/checkpoints
+      - ./exports:/workspace/exports
+      - ~/.cache/huggingface:/workspace/.cache/huggingface
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: all
+              capabilities: [gpu]
+    restart: unless-stopped

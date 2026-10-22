@@ -59,6 +59,7 @@ import {
   generateExecutableRunBundle,
   generateStandardizedModelCard,
   simulateHardwareAndEdgeTargets,
+  buildTextPythonEngineManifest,
 } from '../lib/pipelineLogic';
 import {
   DatasetVersionCommit,
@@ -67,6 +68,7 @@ import {
   TrainingMetricPoint,
 } from '../data/initialPipelineData';
 import { InfoTooltip } from './InfoTooltip';
+import { PythonEngineRunnerCard } from './PythonEngineRunnerCard';
 
 interface CommandCenterViewProps {
   models: RegisteredModel[];
@@ -514,6 +516,25 @@ export const CommandCenterView: React.FC<CommandCenterViewProps> = ({
     useDora,
     useRsLora,
     allocationPolicy: loraAllocationPolicy,
+  });
+
+  const textEngineBundle = buildTextPythonEngineManifest({
+    modelId: selectedModel.id,
+    architecture: selectedModel.architecture,
+    contextWindow: selectedModel.contextWindow,
+    hpoConfig: activeHpoConfig,
+    useDora,
+    useRsLora,
+    samplePackingEnabled,
+    completionOnlyLossEnabled,
+    stage2Enabled,
+    alignmentMethod,
+    alignmentBeta,
+    preferenceDataset,
+    grpoEnabled,
+    grpoRolloutSize,
+    grpoKlBeta,
+    grpoVerifiers,
   });
 
   // 9. Hardware Profile & Edge Target Simulator State
@@ -3415,6 +3436,9 @@ export const CommandCenterView: React.FC<CommandCenterViewProps> = ({
           )}
         </div>
       </section>
+
+      {/* Real Python Engine Runner (Unsloth + Transformers + TRL + PEFT) */}
+      <PythonEngineRunnerCard bundle={textEngineBundle} />
     </div>
   );
 };

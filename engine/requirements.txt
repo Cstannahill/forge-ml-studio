@@ -1,0 +1,41 @@
+# ==============================================================================
+# ForgeML Pipeline Studio — Real Python Fine-Tuning & Export Engine Dependencies
+# Target Hardware: NVIDIA Ampere / Ada / Hopper GPU (CUDA 12.1 / 12.4+) or Apple MPS / CPU fallback
+# ==============================================================================
+
+# Core Deep Learning & CUDA / Attention Kernels
+torch>=2.5.1
+torchvision>=0.20.1
+torchaudio>=2.5.1
+triton>=3.1.0; platform_system == "Linux"
+xformers>=0.0.28.post3; platform_system == "Linux"
+
+# Unsloth FastLanguageModel & FastVisionModel (2x faster, 70% less VRAM for Qwen3.5 & Gemma4)
+unsloth>=2025.3.1
+unsloth-zoo>=2025.3.1
+
+# HuggingFace Transformers, TRL (SFT / ORPO / DPO / KTO / GRPO) & PEFT (LoRA / DoRA)
+transformers>=4.49.0
+trl>=0.15.2
+peft>=0.14.0
+accelerate>=1.4.0
+bitsandbytes>=0.45.3
+datasets>=3.3.2
+huggingface-hub>=0.29.1
+safetensors>=0.5.3
+sentencepiece>=0.2.0
+protobuf>=5.29.3
+
+# Vision-Language (VLM) Dynamic Resolution & Bounding-Box Utilities
+Pillow>=11.1.0
+qwen-vl-utils>=0.0.10
+timm>=1.0.15
+einops>=0.8.1
+
+# Multi-Adapter Task Arithmetic Merging (DARE-TIES, TIES, SLERP)
+mergekit>=0.0.5.1
+
+# Verifiable Reward Evaluation (Math Symbolic Equivalence & JSON Schema)
+sympy>=1.13.3
+math-verify>=0.5.2
+jsonschema>=4.23.0
