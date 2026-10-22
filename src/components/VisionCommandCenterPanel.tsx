@@ -156,10 +156,10 @@ export const VisionCommandCenterPanel: React.FC<VisionCommandCenterPanelProps> =
             <InfoTooltip glossaryKey="vlmIsolatedPipeline" />
           </div>
           <h2 className="text-lg font-bold text-[#FFE9B1]">
-            Multimodal Vision Tower, Connector &amp; Dynamic Patch Studio (Qwen3.5-VL &amp; LFM2.5-VL 450M/1.6B)
+            Multimodal Vision Tower, Connector &amp; Dynamic Patch Studio (Qwen3.5-VL · LFM2.5-VL · Gemma4-VL E2B/E4B)
           </h2>
           <p className="text-xs text-[#A89984]">
-            Dedicated VLM pipeline track: freezes or tunes the SigLIP / NaViT Vision Encoder, trains the Multimodal MLP Connector, and exports dual-file{' '}
+            Dedicated VLM pipeline track: freezes or tunes the SigLIP / NaViT / Pan-&amp;-Scan Vision Encoder, trains the Multimodal Connector, and exports dual-file{' '}
             <code className="font-mono text-[#83A598]">GGUF + mmproj-f16.gguf</code> without touching your pure Text LLM weights.
           </p>
         </div>
@@ -185,8 +185,8 @@ export const VisionCommandCenterPanel: React.FC<VisionCommandCenterPanelProps> =
         </div>
       </div>
 
-      {/* Vision Model Cards (LFM2.5-VL-450M, LFM2.5-VL-1.6B, Qwen3.5-VL-0.8B, Qwen3.5-VL-2B, Gemma4-E2B-Vision) */}
-      <div className="grid grid-cols-1 md:grid-cols-3 xl:grid-cols-5 gap-3">
+      {/* Vision Model Cards (LFM2.5-VL-450M/1.6B, Qwen3.5-VL-0.8B/2B, Gemma4-VL E2B/E4B) */}
+      <div className="grid grid-cols-1 md:grid-cols-3 xl:grid-cols-6 gap-3">
         {visionModels.map((vm) => {
           const isSelected = vm.id === activeVisionModel.id;
           const ft = vm.fineTunedVisionBenchmarks ?? vm.baseVisionBenchmarks;
@@ -218,9 +218,10 @@ export const VisionCommandCenterPanel: React.FC<VisionCommandCenterPanelProps> =
                 </div>
               </div>
 
-              <div className="pt-2 border-t border-[#3C3836] flex items-center justify-between text-[11px] font-mono">
-                <span className="text-[#8EC07C]">DocVQA: {ft.docVqa}%</span>
-                <span className="text-[#B8BB26]">MMMU: {ft.mmmu}%</span>
+              <div className="pt-2 border-t border-[#3C3836] flex flex-wrap items-center justify-between gap-1 text-[10px] font-mono">
+                <span className="text-[#8EC07C]">M-MMLU: {ft.mMmlu}%</span>
+                <span className="text-[#83A598]">MMMU: {ft.mmmu}%</span>
+                <span className="text-[#B8BB26]">DocVQA: {ft.docVqa}%</span>
               </div>
             </button>
           );
@@ -374,8 +375,9 @@ export const VisionCommandCenterPanel: React.FC<VisionCommandCenterPanelProps> =
             </button>
           </div>
 
-          <div className="grid grid-cols-2 sm:grid-cols-5 gap-2 text-center font-mono">
+          <div className="grid grid-cols-2 sm:grid-cols-6 gap-2 text-center font-mono">
             {[
+              { label: 'M-MMLU', base: baseBench.mMmlu, ft: ftBench.mMmlu },
               { label: 'MMMU', base: baseBench.mmmu, ft: ftBench.mmmu },
               { label: 'DocVQA', base: baseBench.docVqa, ft: ftBench.docVqa },
               { label: 'MathVista', base: baseBench.mathVista, ft: ftBench.mathVista },

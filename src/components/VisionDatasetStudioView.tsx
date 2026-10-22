@@ -460,6 +460,9 @@ export const VisionDatasetStudioView: React.FC<VisionDatasetStudioViewProps> = (
               className="px-3 py-1.5 text-xs bg-[#1D2021] border border-[#4A453E] rounded-lg text-[#FFE9B1] font-mono focus:outline-none focus:border-[#83A598]"
             >
               <option value="QWEN_VL_CHATML">Qwen3.5-VL ChatML (&lt;|image_pad|&gt;)</option>
+              <option value="GEMMA4_VL_PAN_SCAN">
+                Gemma4-VL Pan-&amp;-Scan (&lt;image_soft_token&gt;)
+              </option>
               <option value="LLAVA_SHAREGPT4V">LFM2.5-VL / ShareGPT4V (&lt;image&gt;)</option>
               <option value="OPENAI_VISION_MESSAGES">OpenAI Vision Messages (image_url)</option>
             </select>
@@ -467,31 +470,46 @@ export const VisionDatasetStudioView: React.FC<VisionDatasetStudioViewProps> = (
         </div>
       </div>
 
-      {/* V01. Curated Sub-2B Vision-Language (VLM) Dataset Blends Library (25 Blends) */}
+      {/* V01. Curated Sub-2B & Gemma4-VL Vision-Language Dataset Blends Library (28 Blends) */}
       <section className="bg-[#252423] border border-[#4A453E] rounded-xl p-6 space-y-5">
         <div className="flex flex-col xl:flex-row xl:items-center justify-between gap-4 border-b border-[#3C3836] pb-4">
           <div>
             <h2 className="text-base font-semibold text-[#FFE9B1] flex items-center gap-2">
               <ImageIcon className="w-4 h-4 text-[#83A598]" />
-              V01. Curated Sub-2B Vision-Language (VLM) Dataset Blends Library ({CURATED_VISION_BLENDS.length}{' '}
-              Task Blends)
+              V01. Curated Vision-Language (VLM) Dataset Blends Library ({CURATED_VISION_BLENDS.length}{' '}
+              Task Blends · Qwen3.5-VL · LFM2.5-VL · Gemma4-VL)
               <InfoTooltip glossaryKey="bboxGrounding" />
             </h2>
             <p className="text-xs text-[#A89984] mt-0.5">
-              25 thoughtfully engineered HuggingFace multimodal blends including the{' '}
+              {CURATED_VISION_BLENDS.length} thoughtfully engineered HuggingFace multimodal blends including the{' '}
               <span className="font-mono text-[#FABD2F]">VEIL 5-Category Privacy Hazard Audit</span>{' '}
-              suite, OCR/DocVQA, GUI Grounding, Medical/Remote Sensing, Visual CoT, and 450M Edge VQA
+              suite, <span className="font-mono text-[#8EC07C]">Gemma4-VL Pan-&amp;-Scan DocVQA &amp; M-MMLU</span>, GUI Grounding, Visual CoT, and 450M Edge VQA
             </p>
           </div>
 
           <div className="flex flex-wrap items-center gap-2">
+            <button
+              type="button"
+              onClick={() =>
+                setBlendSearchQuery((prev) => (prev.toLowerCase() === 'gemma4' ? '' : 'Gemma4'))
+              }
+              className={`px-2.5 py-1 text-xs font-mono rounded-lg border transition-colors ${
+                blendSearchQuery.toLowerCase() === 'gemma4'
+                  ? 'bg-[#8EC07C] text-[#1D2021] border-[#8EC07C] font-semibold'
+                  : 'bg-[#1D2021] text-[#8EC07C] border-[#8EC07C]/40 hover:border-[#8EC07C]'
+              }`}
+            >
+              {blendSearchQuery.toLowerCase() === 'gemma4'
+                ? 'Showing Gemma4-VL Blends (Clear)'
+                : 'Filter Gemma4-VL Blends'}
+            </button>
             <div className="relative">
               <Search className="w-3.5 h-3.5 text-[#A89984] absolute left-2.5 top-1/2 -translate-y-1/2" />
               <input
                 type="text"
                 value={blendSearchQuery}
                 onChange={(e) => setBlendSearchQuery(e.target.value)}
-                placeholder="Search 25 HF vision blends..."
+                placeholder={`Search ${CURATED_VISION_BLENDS.length} HF vision blends...`}
                 className="pl-8 pr-3 py-1 text-xs bg-[#1D2021] border border-[#4A453E] rounded-lg text-[#FFE9B1] font-mono w-52"
               />
             </div>

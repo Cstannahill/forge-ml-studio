@@ -995,11 +995,13 @@ import {
   buildInitialVisionSamples,
   buildVeilPrivacyAuditSeedSamples,
   buildVisionCurriculumPlan,
+  buildVisionVlmBenchmarkDashboard,
   calculateVisualPatchTokens,
   capExcessiveNavitPatches,
   cleanAndNormalizeVisionSample,
   computeVisionPipelineHardwarePlan,
   computeVisionTokenizerAndPatchDensity,
+  formatVisionSamplePayload,
   generateVisionTeacherDistillationBatch,
   parseCustomVisionDatasetUpload,
   pruneVisionDatasetByAlignmentAndPhash,
@@ -1010,19 +1012,26 @@ import {
   evaluateVeilVisualSandboxScene,
 } from './visionPipelineLogic.ts';
 
-test('INITIAL_VISION_MODELS and CURATED_VISION_BLENDS include 5 multimodal models and 25 HuggingFace dataset blends including VEIL Privacy Hazard Auditing', () => {
+test('INITIAL_VISION_MODELS and CURATED_VISION_BLENDS include 6 multimodal models (including Gemma4 E2B & E4B) and 28 HuggingFace dataset blends including VEIL Privacy Hazard Auditing and Gemma4-VL suites', () => {
   const modelIds = INITIAL_VISION_MODELS.map((m) => m.id);
+  assert.equal(INITIAL_VISION_MODELS.length, 6);
   assert.ok(modelIds.includes('LiquidAI/LFM2.5-VL-450M-Instruct'));
   assert.ok(modelIds.includes('LiquidAI/LFM2.5-VL-1.6B-Instruct'));
   assert.ok(modelIds.includes('Qwen/Qwen3.5-VL-0.8B-Instruct'));
   assert.ok(modelIds.includes('Qwen/Qwen3.5-VL-2B-Instruct'));
   assert.ok(modelIds.includes('google/gemma-4-e2b-vision-it'));
-  assert.equal(CURATED_VISION_BLENDS.length, 25);
+  assert.ok(modelIds.includes('google/gemma-4-e4b-vision-it'));
+  assert.equal(CURATED_VISION_BLENDS.length, 28);
 
   const veilBlends = CURATED_VISION_BLENDS.filter(
     (b) => b.taskCategory === 'VEIL_PRIVACY_AUDIT'
   );
   assert.equal(veilBlends.length, 6);
+
+  const gemma4Blends = CURATED_VISION_BLENDS.filter((b) =>
+    b.id.startsWith('vlm-blend-gemma4-')
+  );
+  assert.equal(gemma4Blends.length, 3);
 
   // Every blend dataset weight sum must equal 100%
   for (const blend of CURATED_VISION_BLENDS) {
@@ -1362,4 +1371,41 @@ test('computeBox2dIoU, computeVisionGrpoIoURewardPlan, and evaluateVeilVisualSan
   assert.equal(scene5Eval.falsePositiveEliminated, true);
   assert.equal(scene5Eval.recommendedRedactionMode, 'SAFE_PASS');
 });
+
+test('buildVisionVlmBenchmarkDashboard and Gemma4-VL Pan-&-Scan serialization track M-MMLU, MMMU, and DocVQA across all VISION_VLM models', () => {
+  const dashboard = buildVisionVlmBenchmarkDashboard(
+    INITIAL_VISION_MODELS,
+    'google/gemma-4-e4b-vision-it'
+  );
+  assert.equal(dashboard.selectedModel.id, 'google/gemma-4-e4b-vision-it');
+  assert.equal(dashboard.coreTriadMetrics.length, 3);
+  assert.deepEqual(
+    dashboard.coreTriadMetrics.map((m) => m.shortLabel),
+    ['M-MMLU', 'MMMU', 'DocVQA']
+  );
+  assert.ok(dashboard.coreTriadMetrics[0].fineTunedScore > dashboard.coreTriadMetrics[0].baseScore);
+  assert.ok(dashboard.coreTriadMetrics[1].fineTunedScore > dashboard.coreTriadMetrics[1].baseScore);
+  assert.ok(dashboard.coreTriadMetrics[2].fineTunedScore > dashboard.coreTriadMetrics[2].baseScore);
+  assert.equal(dashboard.selectedModelBarChartData.length, 6);
+  assert.equal(dashboard.crossModelTriadChartData.length, 6);
+  assert.equal(dashboard.registryTableRows.length, 6);
+
+  const gemma4Payload = formatVisionSamplePayload(
+    {
+      imageUri: 's3://forgeml-vision/docvqa_panscan_01.png',
+      instruction: 'Extract quarterly revenue from the Pan-&-Scan table.',
+      assistantThinking: 'Inspecting high-res crop [100, 120, 480, 620].',
+      assistantOutput: '{"q4_revenue_usd": "14.2M"}',
+      boundingBoxes: [{ label: 'revenue_cell', box2d: [100, 120, 480, 620] }],
+    },
+    'GEMMA4_VL_PAN_SCAN'
+  );
+  assert.ok(gemma4Payload.includes('<start_of_image><image_soft_token><end_of_image>'));
+
+  const gemma4Audit = auditVisionTokenizerSpecialTokens('Gemma4');
+  assert.equal(gemma4Audit.allSpecialTokensAtomic, true);
+  assert.equal(gemma4Audit.tokens[0].tokenLiteral, '<start_of_image>');
+  assert.equal(gemma4Audit.tokens[1].tokenLiteral, '<image_soft_token>');
+});
+
 

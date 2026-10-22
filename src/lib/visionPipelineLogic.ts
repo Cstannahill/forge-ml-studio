@@ -14,6 +14,7 @@ export type VisionProjectorType =
 
 export type VisionTargetFormat =
   | 'QWEN_VL_CHATML'
+  | 'GEMMA4_VL_PAN_SCAN'
   | 'LLAVA_SHAREGPT4V'
   | 'OPENAI_VISION_MESSAGES';
 
@@ -26,8 +27,9 @@ export type VisionTaskCategory =
   | 'SPATIAL_EDGE_VQA';
 
 export interface VisionBenchmarkMetrics {
-  mmmu: number; // % Multimodal Understanding
-  docVqa: number; // % Document & Receipt OCR VQA
+  mMmlu: number; // % Multilingual & Multimodal M-MMLU
+  mmmu: number; // % Multi-Discipline Multimodal Understanding (MMMU)
+  docVqa: number; // % Document & Receipt OCR VQA (DocVQA)
   mathVista: number; // % Visual Math & Diagram Reasoning
   realWorldQa: number; // % Spatial & Real-World VQA
   groundingIoU: number; // % Bounding-Box Localization IoU@0.5
@@ -278,6 +280,7 @@ export const INITIAL_VISION_MODELS: RegisteredVisionModel[] = [
     status: 'FINE_TUNED_READY',
     detectedAt: '2026-10-20 08:15 UTC',
     baseVisionBenchmarks: {
+      mMmlu: 42.6,
       mmmu: 38.4,
       docVqa: 74.2,
       mathVista: 46.8,
@@ -286,6 +289,7 @@ export const INITIAL_VISION_MODELS: RegisteredVisionModel[] = [
       visionTokensPerSec: 392.0,
     },
     fineTunedVisionBenchmarks: {
+      mMmlu: 49.4,
       mmmu: 44.9,
       docVqa: 82.6,
       mathVista: 54.3,
@@ -312,6 +316,7 @@ export const INITIAL_VISION_MODELS: RegisteredVisionModel[] = [
     status: 'FINE_TUNED_READY',
     detectedAt: '2026-10-20 09:40 UTC',
     baseVisionBenchmarks: {
+      mMmlu: 50.8,
       mmmu: 46.8,
       docVqa: 83.5,
       mathVista: 58.2,
@@ -320,6 +325,7 @@ export const INITIAL_VISION_MODELS: RegisteredVisionModel[] = [
       visionTokensPerSec: 268.4,
     },
     fineTunedVisionBenchmarks: {
+      mMmlu: 57.9,
       mmmu: 53.2,
       docVqa: 89.4,
       mathVista: 66.1,
@@ -346,6 +352,7 @@ export const INITIAL_VISION_MODELS: RegisteredVisionModel[] = [
     status: 'FINE_TUNED_READY',
     detectedAt: '2026-10-20 11:00 UTC',
     baseVisionBenchmarks: {
+      mMmlu: 47.5,
       mmmu: 43.2,
       docVqa: 81.8,
       mathVista: 54.6,
@@ -354,6 +361,7 @@ export const INITIAL_VISION_MODELS: RegisteredVisionModel[] = [
       visionTokensPerSec: 312.8,
     },
     fineTunedVisionBenchmarks: {
+      mMmlu: 54.6,
       mmmu: 49.7,
       docVqa: 88.2,
       mathVista: 62.5,
@@ -380,6 +388,7 @@ export const INITIAL_VISION_MODELS: RegisteredVisionModel[] = [
     status: 'FINE_TUNED_READY',
     detectedAt: '2026-10-20 12:30 UTC',
     baseVisionBenchmarks: {
+      mMmlu: 55.2,
       mmmu: 51.4,
       docVqa: 88.6,
       mathVista: 63.8,
@@ -388,6 +397,7 @@ export const INITIAL_VISION_MODELS: RegisteredVisionModel[] = [
       visionTokensPerSec: 214.2,
     },
     fineTunedVisionBenchmarks: {
+      mMmlu: 62.4,
       mmmu: 58.1,
       docVqa: 93.4,
       mathVista: 71.2,
@@ -414,6 +424,7 @@ export const INITIAL_VISION_MODELS: RegisteredVisionModel[] = [
     status: 'FINE_TUNED_READY',
     detectedAt: '2026-10-20 14:10 UTC',
     baseVisionBenchmarks: {
+      mMmlu: 54.1,
       mmmu: 50.2,
       docVqa: 86.4,
       mathVista: 61.5,
@@ -422,6 +433,7 @@ export const INITIAL_VISION_MODELS: RegisteredVisionModel[] = [
       visionTokensPerSec: 205.0,
     },
     fineTunedVisionBenchmarks: {
+      mMmlu: 61.3,
       mmmu: 56.4,
       docVqa: 91.8,
       mathVista: 68.9,
@@ -430,6 +442,42 @@ export const INITIAL_VISION_MODELS: RegisteredVisionModel[] = [
       visionTokensPerSec: 204.2,
     },
     fineTunedCheckpointId: 'ft-gemma4-e2b-vision-r32-v1',
+    datasetVersionUsed: 'v1.4.0-vision (sha256:7c31e9a)',
+  },
+  {
+    id: 'google/gemma-4-e4b-vision-it',
+    name: 'Gemma4-E4B-Vision-IT (Multimodal Pan-&-Scan 4B)',
+    architecture: 'Gemma4',
+    visionEncoder: 'SigLIP-So400M-Pan&Scan-Adaptive-Tiling (896x896)',
+    projectorType: 'Cross-Modal Linear Connector',
+    totalParamsBillions: 4.4,
+    visionTowerParamsMillions: 400,
+    llmBackboneParamsBillions: 4.0,
+    contextWindow: 131072,
+    defaultMinPixels: 256 * 28 * 28,
+    defaultMaxPixels: 1280 * 28 * 28,
+    quantizationDefault: 'qlora-4bit',
+    status: 'FINE_TUNED_READY',
+    detectedAt: '2026-10-20 15:25 UTC',
+    baseVisionBenchmarks: {
+      mMmlu: 57.6,
+      mmmu: 54.8,
+      docVqa: 90.4,
+      mathVista: 66.2,
+      realWorldQa: 70.8,
+      groundingIoU: 78.2,
+      visionTokensPerSec: 184.5,
+    },
+    fineTunedVisionBenchmarks: {
+      mMmlu: 64.9,
+      mmmu: 61.7,
+      docVqa: 95.1,
+      mathVista: 73.8,
+      realWorldQa: 77.9,
+      groundingIoU: 86.4,
+      visionTokensPerSec: 183.8,
+    },
+    fineTunedCheckpointId: 'ft-gemma4-e4b-vision-r32-wsd-v2',
     datasetVersionUsed: 'v1.4.0-vision (sha256:7c31e9a)',
   },
 ];
@@ -1481,11 +1529,111 @@ export const CURATED_VISION_BLENDS: CuratedVisionBlend[] = [
       },
     ],
   },
+  {
+    id: 'vlm-blend-gemma4-pan-scan-docvqa',
+    title: 'Gemma4-VL Pan-&-Scan High-Resolution DocVQA & Infographics Suite',
+    recommendedModelIds: [
+      'google/gemma-4-e2b-vision-it',
+      'google/gemma-4-e4b-vision-it',
+      'Qwen/Qwen3.5-VL-2B-Instruct',
+    ],
+    taskCategory: 'OCR_DOCUMENT',
+    description:
+      'Specifically engineered for Gemma4-VL SigLIP-So400M Pan-&-Scan adaptive tiling (896x896 crops). Trains ultra-dense document OCR, wide financial spreadsheets, and multi-panel infographics with <image_soft_token> alignment.',
+    totalImagePairs: '58,000 Pan-&-Scan tiled document pairs',
+    avgPatchTokens: 768,
+    expectedDocVqaLift: '+6.8% DocVQA & InfoVQA',
+    expectedMmmuLift: '+5.4% M-MMLU Document Track',
+    datasets: [
+      {
+        hfRepoId: 'google/PaliGemma-DocVQA-PanScan-896',
+        weightPct: 45,
+        focus: 'Pan-&-Scan non-square document crops & dense micro-typography OCR',
+      },
+      {
+        hfRepoId: 'HuggingFaceM4/Docmatix-Sub2B-Clean',
+        weightPct: 35,
+        focus: 'Multi-page PDF tables, SEC filings & structured JSON extraction',
+      },
+      {
+        hfRepoId: 'vidore/colpali_train_set',
+        weightPct: 20,
+        focus: 'Visual document retrieval & infographic layout grounding',
+      },
+    ],
+  },
+  {
+    id: 'vlm-blend-gemma4-multilingual-mmmlu',
+    title: 'Gemma4-VL Multilingual M-MMLU & Cross-Lingual Visual Reasoning',
+    recommendedModelIds: [
+      'google/gemma-4-e2b-vision-it',
+      'google/gemma-4-e4b-vision-it',
+      'Qwen/Qwen3.5-VL-2B-Instruct',
+      'LiquidAI/LFM2.5-VL-1.6B-Instruct',
+    ],
+    taskCategory: 'CHART_DIAGRAM',
+    description:
+      'Leverages Gemma4 256k SentencePiece multilingual vocabulary and SigLIP connector to boost M-MMLU (Multilingual Multimodal Understanding) across 42 languages on charts, cultural artifacts, and non-Latin OCR.',
+    totalImagePairs: '64,000 multilingual VQA pairs',
+    avgPatchTokens: 640,
+    expectedDocVqaLift: '+7.5% MTVQA Cross-Lingual OCR',
+    expectedMmmuLift: '+7.3% M-MMLU & Global-MMMU',
+    datasets: [
+      {
+        hfRepoId: 'CohereForAI/Global-MMLU-Vision-Aligned',
+        weightPct: 45,
+        focus: 'Culturally agnostic & localized M-MMLU visual STEM/humanities questions',
+      },
+      {
+        hfRepoId: 'FreedomIntelligence/MTVQA-Multilingual-Text-VQA',
+        weightPct: 35,
+        focus: 'High-resolution multilingual scene text, menus, street signs & forms',
+      },
+      {
+        hfRepoId: 'AI4Math/MathVista-Multilingual-Sub4B',
+        weightPct: 20,
+        focus: 'Cross-lingual diagrammatic math & chart reasoning traces',
+      },
+    ],
+  },
+  {
+    id: 'vlm-blend-gemma4-mmmu-scientific-diagrams',
+    title: 'Gemma4-VL MMMU Multi-Discipline STEM & Clinical Diagram Synthesis',
+    recommendedModelIds: [
+      'google/gemma-4-e4b-vision-it',
+      'google/gemma-4-e2b-vision-it',
+      'Qwen/Qwen3.5-VL-2B-Instruct',
+    ],
+    taskCategory: 'VISUAL_COT_MATH',
+    description:
+      'Targets college-level MMMU benchmarks across 30 subjects (organic chemistry structures, electrical schematics, pathology slides, and physics free-body diagrams) with verified <think> visual reasoning.',
+    totalImagePairs: '46,500 college STEM diagram pairs',
+    avgPatchTokens: 704,
+    expectedDocVqaLift: '+5.2% ScienceQA-IMG',
+    expectedMmmuLift: '+6.9% MMMU & MMMU-Pro',
+    datasets: [
+      {
+        hfRepoId: 'MMMU/MMMU-Pro-CoT-Verified',
+        weightPct: 50,
+        focus: 'Multi-discipline college diagrams with step-by-step visual CoT',
+      },
+      {
+        hfRepoId: 'HuggingFaceM4/AI2D-Diagram-Grounding',
+        weightPct: 30,
+        focus: 'Arrow/node diagram topology & scientific flowchart localization',
+      },
+      {
+        hfRepoId: 'Lin-Chen/ShareGPT4V-STEM-Diagrams',
+        weightPct: 20,
+        focus: 'Dense captioning of lab schematics, circuits & anatomical plates',
+      },
+    ],
+  },
 ];
 
 /**
  * Calculates how many visual patch tokens an image of (widthPx x heightPx) consumes
- * under Qwen3.5-VL / LFM2.5-VL dynamic resolution (patchSizePx=14 with 2x2 merger -> 28x28 effective patch).
+ * under Qwen3.5-VL / LFM2.5-VL / Gemma4-VL dynamic resolution (patchSizePx=14 with 2x2 merger -> 28x28 effective patch).
  */
 export function calculateVisualPatchTokens(
   widthPx: number,
@@ -1501,7 +1649,7 @@ export function calculateVisualPatchTokens(
 }
 
 /**
- * Formats a Vision-Language training record into canonical Qwen-VL ChatML, LLaVA ShareGPT4V, or OpenAI Vision Messages.
+ * Formats a Vision-Language training record into canonical Qwen-VL ChatML, Gemma4-VL Pan-&-Scan, LLaVA ShareGPT4V, or OpenAI Vision Messages.
  */
 export function formatVisionSamplePayload(
   sample: {
@@ -1528,6 +1676,10 @@ export function formatVisionSamplePayload(
 
   if (targetFormat === 'QWEN_VL_CHATML') {
     return `<|im_start|>system\nYou are a precise Vision-Language assistant. Inspect visual regions carefully before answering.<|im_end|>\n<|im_start|>user\n<|vision_start|><|image_pad|><|vision_end|>${sample.instruction.trim()}<|im_end|>\n<|im_start|>assistant\n${fullAssistant}<|im_end|>`;
+  }
+
+  if (targetFormat === 'GEMMA4_VL_PAN_SCAN') {
+    return `<bos><start_of_turn>user\n<start_of_image><image_soft_token><end_of_image>${sample.instruction.trim()}<end_of_turn>\n<start_of_turn>model\n${fullAssistant}<end_of_turn>`;
   }
 
   if (targetFormat === 'LLAVA_SHAREGPT4V') {
@@ -2586,24 +2738,31 @@ export function buildVisionCurriculumPlan(
 export function auditVisionTokenizerSpecialTokens(
   architecture: ArchitectureFamily
 ): VisionTokenizerAuditResult {
-  const baseId = architecture === 'Qwen3.5' ? 151850 : architecture === 'LFM2.5' ? 64200 : 256100;
+  const baseId = architecture === 'Qwen3.5' ? 151850 : architecture === 'LFM2.5' ? 64200 : 255990;
+  const isGemma4 = architecture === 'Gemma4';
 
   const tokens = [
     {
-      tokenLiteral: '<|vision_start|>',
-      role: 'Vision patch sequence start boundary',
+      tokenLiteral: isGemma4 ? '<start_of_image>' : '<|vision_start|>',
+      role: isGemma4
+        ? 'Gemma4 Pan-&-Scan SigLIP image boundary start'
+        : 'Vision patch sequence start boundary',
       tokenId: baseId + 1,
       isAtomic: true,
     },
     {
-      tokenLiteral: '<|image_pad|>',
-      role: 'Dynamic NaViT / SigLIP visual patch placeholder',
+      tokenLiteral: isGemma4 ? '<image_soft_token>' : '<|image_pad|>',
+      role: isGemma4
+        ? 'Gemma4 SigLIP-So400M 256-soft-token tile placeholder'
+        : 'Dynamic NaViT / SigLIP visual patch placeholder',
       tokenId: baseId + 2,
       isAtomic: true,
     },
     {
-      tokenLiteral: '<|vision_end|>',
-      role: 'Vision patch sequence end boundary',
+      tokenLiteral: isGemma4 ? '<end_of_image>' : '<|vision_end|>',
+      role: isGemma4
+        ? 'Gemma4 Pan-&-Scan SigLIP image boundary end'
+        : 'Vision patch sequence end boundary',
       tokenId: baseId + 3,
       isAtomic: true,
     },
@@ -2633,7 +2792,16 @@ export function auditVisionTokenizerSpecialTokens(
     },
   ];
 
-  const surgeryPythonSnippet = `# Vision-Language Special-Token Surgery (${architecture}-VL)
+  const surgeryPythonSnippet = isGemma4
+    ? `# Vision-Language Special-Token Surgery (Gemma4-VL Pan-&-Scan)
+vision_special_tokens = [
+    "<start_of_image>", "<image_soft_token>", "<end_of_image>",
+    "<ref>", "</ref>", "<box>", "</box>", "<think>", "</think>"
+]
+added = processor.tokenizer.add_special_tokens({"additional_special_tokens": vision_special_tokens})
+if added > 0:
+    model.resize_token_embeddings(len(processor.tokenizer), pad_to_multiple_of=64)`
+    : `# Vision-Language Special-Token Surgery (${architecture}-VL)
 vision_special_tokens = [
     "<|vision_start|>", "<|image_pad|>", "<|vision_end|>",
     "<ref>", "</ref>", "<box>", "</box>", "<think>", "</think>"
@@ -3142,4 +3310,234 @@ export function evaluateVeilVisualSandboxScene(scene: VeilSandboxScene): {
     recommendedRedactionMode: scene.defaultAction,
   };
 }
+
+// ============================================================================
+// VISION_VLM BENCHMARK DASHBOARD (M-MMLU · MMMU · DocVQA VISUAL ANALYTICS)
+// ============================================================================
+
+export interface VisionTriadMetricCard {
+  key: 'mMmlu' | 'mmmu' | 'docVqa';
+  label: string;
+  shortLabel: string;
+  subtitle: string;
+  baseScore: number;
+  fineTunedScore: number;
+  delta: number;
+  relativeGainPct: number;
+  accentColor: string;
+}
+
+export interface VisionModelBenchmarkSummaryRow {
+  modelId: string;
+  modelName: string;
+  architecture: ArchitectureFamily;
+  totalParamsBillions: number;
+  visionEncoder: string;
+  mMmluBase: number;
+  mMmluFineTuned: number;
+  mMmluDelta: number;
+  mmmuBase: number;
+  mmmuFineTuned: number;
+  mmmuDelta: number;
+  docVqaBase: number;
+  docVqaFineTuned: number;
+  docVqaDelta: number;
+  mathVistaFineTuned: number;
+  realWorldQaFineTuned: number;
+  groundingIoUFineTuned: number;
+  visionTokensPerSec: number;
+  averageCoreTriadDelta: number;
+}
+
+export interface VisionVlmBenchmarkDashboardReport {
+  selectedModel: RegisteredVisionModel;
+  coreTriadMetrics: VisionTriadMetricCard[];
+  selectedModelBarChartData: Array<{
+    metric: string;
+    fullLabel: string;
+    Base: number;
+    FineTuned: number;
+    delta: number;
+  }>;
+  crossModelTriadChartData: Array<{
+    modelShortName: string;
+    modelId: string;
+    architecture: ArchitectureFamily;
+    'M-MMLU': number;
+    MMMU: number;
+    DocVQA: number;
+    'Base M-MMLU': number;
+    'Base MMMU': number;
+    'Base DocVQA': number;
+  }>;
+  registryTableRows: VisionModelBenchmarkSummaryRow[];
+}
+
+/**
+ * Builds the comprehensive VISION_VLM visual benchmark dashboard specifically tracking
+ * M-MMLU (Multilingual Multimodal Understanding), MMMU, and DocVQA across all registered VLMs.
+ */
+export function buildVisionVlmBenchmarkDashboard(
+  visionModels: RegisteredVisionModel[],
+  selectedVisionModelId: string
+): VisionVlmBenchmarkDashboardReport {
+  const safeModels = visionModels.length > 0 ? visionModels : INITIAL_VISION_MODELS;
+  const selectedModel =
+    safeModels.find((m) => m.id === selectedVisionModelId) ?? safeModels[0];
+
+  const base = selectedModel.baseVisionBenchmarks;
+  const ft = selectedModel.fineTunedVisionBenchmarks ?? base;
+
+  const makeTriadCard = (
+    key: 'mMmlu' | 'mmmu' | 'docVqa',
+    label: string,
+    shortLabel: string,
+    subtitle: string,
+    accentColor: string
+  ): VisionTriadMetricCard => {
+    const bVal = base[key];
+    const fVal = ft[key];
+    const delta = Number((fVal - bVal).toFixed(1));
+    const relativeGainPct = Number(((delta / Math.max(1, bVal)) * 100).toFixed(1));
+    return {
+      key,
+      label,
+      shortLabel,
+      subtitle,
+      baseScore: bVal,
+      fineTunedScore: fVal,
+      delta,
+      relativeGainPct,
+      accentColor,
+    };
+  };
+
+  const coreTriadMetrics: VisionTriadMetricCard[] = [
+    makeTriadCard(
+      'mMmlu',
+      'M-MMLU (Multilingual Multimodal Understanding)',
+      'M-MMLU',
+      '42-language cross-lingual VQA, cultural visual reasoning & non-Latin OCR',
+      '#8EC07C'
+    ),
+    makeTriadCard(
+      'mmmu',
+      'MMMU (Multi-Discipline Multimodal Understanding)',
+      'MMMU',
+      'College-level multi-discipline STEM diagrams, charts & clinical figures',
+      '#83A598'
+    ),
+    makeTriadCard(
+      'docVqa',
+      'DocVQA (High-Res Document & Pan-&-Scan OCR)',
+      'DocVQA',
+      'Dense document layout tables, receipts, waybills & curved label extraction',
+      '#B8BB26'
+    ),
+  ];
+
+  const selectedModelBarChartData = [
+    {
+      metric: 'M-MMLU',
+      fullLabel: 'M-MMLU (Multilingual Multimodal)',
+      Base: base.mMmlu,
+      FineTuned: ft.mMmlu,
+      delta: Number((ft.mMmlu - base.mMmlu).toFixed(1)),
+    },
+    {
+      metric: 'MMMU',
+      fullLabel: 'MMMU (College STEM Multimodal)',
+      Base: base.mmmu,
+      FineTuned: ft.mmmu,
+      delta: Number((ft.mmmu - base.mmmu).toFixed(1)),
+    },
+    {
+      metric: 'DocVQA',
+      fullLabel: 'DocVQA (Document & Layout OCR)',
+      Base: base.docVqa,
+      FineTuned: ft.docVqa,
+      delta: Number((ft.docVqa - base.docVqa).toFixed(1)),
+    },
+    {
+      metric: 'MathVista',
+      fullLabel: 'MathVista (Visual Math & Geometry)',
+      Base: base.mathVista,
+      FineTuned: ft.mathVista,
+      delta: Number((ft.mathVista - base.mathVista).toFixed(1)),
+    },
+    {
+      metric: 'RealWorldQA',
+      fullLabel: 'RealWorldQA (Spatial Edge VQA)',
+      Base: base.realWorldQa,
+      FineTuned: ft.realWorldQa,
+      delta: Number((ft.realWorldQa - base.realWorldQa).toFixed(1)),
+    },
+    {
+      metric: 'BBox IoU',
+      fullLabel: 'Grounded Bounding-Box IoU@0.5',
+      Base: base.groundingIoU,
+      FineTuned: ft.groundingIoU,
+      delta: Number((ft.groundingIoU - base.groundingIoU).toFixed(1)),
+    },
+  ];
+
+  const crossModelTriadChartData = safeModels.map((vm) => {
+    const vmBase = vm.baseVisionBenchmarks;
+    const vmFt = vm.fineTunedVisionBenchmarks ?? vmBase;
+    const shortName = vm.name.split(' (')[0];
+    return {
+      modelShortName: shortName,
+      modelId: vm.id,
+      architecture: vm.architecture,
+      'M-MMLU': vmFt.mMmlu,
+      MMMU: vmFt.mmmu,
+      DocVQA: vmFt.docVqa,
+      'Base M-MMLU': vmBase.mMmlu,
+      'Base MMMU': vmBase.mmmu,
+      'Base DocVQA': vmBase.docVqa,
+    };
+  });
+
+  const registryTableRows: VisionModelBenchmarkSummaryRow[] = safeModels.map((vm) => {
+    const b = vm.baseVisionBenchmarks;
+    const f = vm.fineTunedVisionBenchmarks ?? b;
+    const mMmluDelta = Number((f.mMmlu - b.mMmlu).toFixed(1));
+    const mmmuDelta = Number((f.mmmu - b.mmmu).toFixed(1));
+    const docVqaDelta = Number((f.docVqa - b.docVqa).toFixed(1));
+    const averageCoreTriadDelta = Number(
+      ((mMmluDelta + mmmuDelta + docVqaDelta) / 3).toFixed(1)
+    );
+
+    return {
+      modelId: vm.id,
+      modelName: vm.name,
+      architecture: vm.architecture,
+      totalParamsBillions: vm.totalParamsBillions,
+      visionEncoder: vm.visionEncoder,
+      mMmluBase: b.mMmlu,
+      mMmluFineTuned: f.mMmlu,
+      mMmluDelta,
+      mmmuBase: b.mmmu,
+      mmmuFineTuned: f.mmmu,
+      mmmuDelta,
+      docVqaBase: b.docVqa,
+      docVqaFineTuned: f.docVqa,
+      docVqaDelta,
+      mathVistaFineTuned: f.mathVista,
+      realWorldQaFineTuned: f.realWorldQa,
+      groundingIoUFineTuned: f.groundingIoU,
+      visionTokensPerSec: f.visionTokensPerSec,
+      averageCoreTriadDelta,
+    };
+  });
+
+  return {
+    selectedModel,
+    coreTriadMetrics,
+    selectedModelBarChartData,
+    crossModelTriadChartData,
+    registryTableRows,
+  };
+}
+
 

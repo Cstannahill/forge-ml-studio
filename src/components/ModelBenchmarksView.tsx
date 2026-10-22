@@ -5,6 +5,7 @@ import {
   Bot,
   CheckCircle2,
   Cpu,
+  Eye,
   Flag,
   Plus,
   Play,
@@ -13,6 +14,9 @@ import {
   Terminal,
 } from 'lucide-react';
 import {
+  Bar,
+  BarChart,
+  CartesianGrid,
   Legend,
   PolarAngleAxis,
   PolarGrid,
@@ -21,6 +25,8 @@ import {
   RadarChart,
   ResponsiveContainer,
   Tooltip,
+  XAxis,
+  YAxis,
 } from 'recharts';
 import { VeilVisionRedactionCanvas } from './VeilVisionRedactionCanvas';
 import {
@@ -33,6 +39,12 @@ import {
   generateArenaComparisonResponse,
   runAutomatedRedTeamStressSuite,
 } from '../lib/pipelineLogic';
+import {
+  INITIAL_VISION_MODELS,
+  PipelineModalityTrack,
+  RegisteredVisionModel,
+  buildVisionVlmBenchmarkDashboard,
+} from '../lib/visionPipelineLogic';
 import { RegisteredModel } from '../data/initialPipelineData';
 import { InfoTooltip } from './InfoTooltip';
 
@@ -58,6 +70,11 @@ interface ModelBenchmarksViewProps {
     domainTag: string;
   }) => void;
   isExplaining: boolean;
+  visionModels?: RegisteredVisionModel[];
+  selectedVisionModelId?: string;
+  onSelectVisionModel?: (id: string) => void;
+  onTriggerVisionFineTune?: (modelId: string) => void;
+  pipelineTrack?: PipelineModalityTrack;
 }
 
 const ARENA_PRESETS: Array<{
@@ -101,12 +118,34 @@ export const ModelBenchmarksView: React.FC<ModelBenchmarksViewProps> = ({
   onExplainBenchmarksWithLlm,
   onSendFlaggedPromptToDatasetStudio,
   isExplaining,
+  visionModels = INITIAL_VISION_MODELS,
+  selectedVisionModelId,
+  onSelectVisionModel,
+  onTriggerVisionFineTune,
+  pipelineTrack = 'TEXT_LLM',
 }) => {
   const [newModelId, setNewModelId] = useState('');
   const [newArch, setNewArch] = useState<ArchitectureFamily>('Qwen3.5');
   const [newParamsB, setNewParamsB] = useState(2.0);
   const [newContext, setNewContext] = useState(32768);
   const [formError, setFormError] = useState('');
+
+  // Local fallback selection for VISION_VLM benchmark dashboard if not controlled by parent
+  const [localVisionModelId, setLocalVisionModelId] = useState<string>(
+    visionModels[0]?.id ?? 'google/gemma-4-e2b-vision-it'
+  );
+  const effectiveVisionModelId = selectedVisionModelId ?? localVisionModelId;
+  const handleSelectVisionModel = (id: string) => {
+    setLocalVisionModelId(id);
+    if (onSelectVisionModel) {
+      onSelectVisionModel(id);
+    }
+  };
+
+  const vlmDashboard = buildVisionVlmBenchmarkDashboard(
+    visionModels,
+    effectiveVisionModelId
+  );
 
   // Side-by-Side Interactive Evaluation Arena State
   const [arenaPreset, setArenaPreset] = useState<
@@ -276,6 +315,328 @@ export const ModelBenchmarksView: React.FC<ModelBenchmarksViewProps> = ({
               ? `Re-Run Fine-Tune & Auto-Evaluate (${selectedModel.name})`
               : `Fine-Tune & Auto-Benchmark Against Base (${selectedModel.name})`}
           </button>
+        </div>
+      </section>
+
+      {/* VISION_VLM Visual Benchmark Dashboard (M-MMLU · MMMU · DocVQA) */}
+      <section
+        aria-label="VISION_VLM Visual Benchmark Dashboard"
+        className={`bg-[#252423] border-2 rounded-xl p-6 space-y-6 ${
+          pipelineTrack === 'VISION_VLM'
+            ? 'border-[#8EC07C] ring-1 ring-[#8EC07C]/30'
+            : 'border-[#8EC07C]/50'
+        }`}
+      >
+        <div className="flex flex-col xl:flex-row xl:items-center justify-between gap-4 border-b border-[#3C3836] pb-4">
+          <div className="space-y-1">
+            <div className="flex flex-wrap items-center gap-2 text-xs font-mono uppercase tracking-wider text-[#8EC07C]">
+              <Eye className="w-4 h-4" />
+              <span>VISION_VLM Track Visual Benchmark Dashboard · M-MMLU · MMMU · DocVQA</span>
+              <span className="px-2 py-0.5 text-[10px] rounded bg-[#1D2021] border border-[#8EC07C]/40 text-[#FFE9B1]">
+                {vlmDashboard.registryTableRows.length} Multimodal Checkpoints (LFM2.5-VL · Qwen3.5-VL · Gemma4-VL)
+              </span>
+            </div>
+            <h2 className="text-lg font-bold text-[#FFE9B1]">
+              Multimodal VLM Evaluation Suite: M-MMLU, MMMU &amp; DocVQA Visual Analytics
+            </h2>
+            <p className="text-xs text-[#A89984] max-w-4xl">
+              Tracks cross-lingual &amp; cultural multimodal reasoning (<strong className="text-[#8EC07C]">M-MMLU</strong>),
+              college-level multi-discipline STEM diagrams (<strong className="text-[#83A598]">MMMU</strong>),
+              and high-resolution Pan-&amp;-Scan / NaViT document extraction (<strong className="text-[#B8BB26]">DocVQA</strong>)
+              across all models in the <code className="font-mono text-[#8EC07C]">VISION_VLM</code> track.
+            </p>
+          </div>
+
+          <div className="flex flex-wrap items-center gap-2.5 shrink-0">
+            <div className="text-xs font-mono text-[#D5C4A1] bg-[#1D2021] border border-[#3C3836] px-3 py-1.5 rounded-lg">
+              Active VLM:{' '}
+              <strong className="text-[#FFE9B1]">{vlmDashboard.selectedModel.name}</strong>
+            </div>
+            {onTriggerVisionFineTune && (
+              <button
+                type="button"
+                onClick={() => onTriggerVisionFineTune(vlmDashboard.selectedModel.id)}
+                className="inline-flex items-center gap-1.5 px-3.5 py-2 text-xs font-semibold text-[#1D2021] bg-[#8EC07C] hover:bg-[#9ed08c] rounded-lg transition-colors whitespace-nowrap"
+              >
+                <Play className="w-3.5 h-3.5 fill-current" />
+                Re-Run VLM Fine-Tune &amp; Eval ({vlmDashboard.selectedModel.architecture}-VL)
+              </button>
+            )}
+          </div>
+        </div>
+
+        {/* VLM Model Selector Strip */}
+        <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-6 gap-2.5">
+          {visionModels.map((vm) => {
+            const isSelected = vm.id === vlmDashboard.selectedModel.id;
+            const ft = vm.fineTunedVisionBenchmarks ?? vm.baseVisionBenchmarks;
+            return (
+              <button
+                key={vm.id}
+                type="button"
+                onClick={() => handleSelectVisionModel(vm.id)}
+                className={`text-left p-3 rounded-xl border transition-all flex flex-col justify-between gap-2 ${
+                  isSelected
+                    ? 'bg-[#1D2021] border-[#8EC07C] ring-1 ring-[#8EC07C]/40'
+                    : 'bg-[#1D2021]/60 border-[#3C3836] hover:border-[#504945]'
+                }`}
+              >
+                <div>
+                  <div className="flex items-center justify-between gap-1">
+                    <span className="text-[10px] font-mono uppercase px-1.5 py-0.5 rounded bg-[#252423] text-[#83A598]">
+                      {vm.architecture}-VL
+                    </span>
+                    <span className="text-[11px] font-mono font-bold text-[#FFE9B1] tabular-nums">
+                      {vm.totalParamsBillions}B
+                    </span>
+                  </div>
+                  <div className="text-xs font-semibold text-[#FFE9B1] mt-1 leading-snug">
+                    {vm.name}
+                  </div>
+                </div>
+                <div className="pt-1.5 border-t border-[#3C3836] flex items-center justify-between text-[10px] font-mono tabular-nums">
+                  <span className="text-[#8EC07C]">M-MMLU {ft.mMmlu}%</span>
+                  <span className="text-[#83A598]">MMMU {ft.mmmu}%</span>
+                  <span className="text-[#B8BB26]">Doc {ft.docVqa}%</span>
+                </div>
+              </button>
+            );
+          })}
+        </div>
+
+        {/* Core Triad Spotlight Cards: M-MMLU, MMMU, DocVQA */}
+        <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
+          {vlmDashboard.coreTriadMetrics.map((card) => (
+            <div
+              key={card.key}
+              className="bg-[#1D2021] border border-[#4A453E] rounded-xl p-4 space-y-3"
+            >
+              <div className="flex items-start justify-between gap-2">
+                <div>
+                  <div className="text-xs font-mono uppercase tracking-wider text-[#A89984]">
+                    {card.shortLabel} Primary VLM Benchmark
+                  </div>
+                  <h3 className="text-sm font-bold text-[#FFE9B1] mt-0.5">{card.label}</h3>
+                </div>
+                <span
+                  className="px-2 py-0.5 text-xs font-mono font-bold rounded bg-[#252423] border border-[#4A453E] tabular-nums"
+                  style={{ color: card.accentColor }}
+                >
+                  +{card.delta}% ({card.relativeGainPct >= 0 ? '+' : ''}
+                  {card.relativeGainPct}% rel)
+                </span>
+              </div>
+
+              <p className="text-[11px] text-[#A89984] leading-relaxed">{card.subtitle}</p>
+
+              <div className="pt-2 border-t border-[#3C3836] flex items-baseline justify-between font-mono tabular-nums">
+                <div className="text-xs text-[#D5C4A1]">
+                  Base Checkpoint: <span className="text-[#A89984]">{card.baseScore}%</span>
+                </div>
+                <div className="text-base font-bold text-[#FFE9B1]">
+                  Fine-Tuned:{' '}
+                  <span style={{ color: card.accentColor }}>{card.fineTunedScore}%</span>
+                </div>
+              </div>
+
+              {/* Dual Progress Bar */}
+              <div className="space-y-1">
+                <div className="w-full h-2 rounded-full bg-[#252423] overflow-hidden flex">
+                  <div
+                    className="h-full bg-[#665C54]"
+                    style={{ width: `${Math.min(100, card.baseScore)}%` }}
+                    title={`Base ${card.shortLabel}: ${card.baseScore}%`}
+                  />
+                  <div
+                    className="h-full"
+                    style={{
+                      width: `${Math.max(0, Math.min(100 - card.baseScore, card.delta))}%`,
+                      backgroundColor: card.accentColor,
+                    }}
+                    title={`Fine-Tuned Gain: +${card.delta}%`}
+                  />
+                </div>
+              </div>
+            </div>
+          ))}
+        </div>
+
+        {/* Visual Charts Row: Selected Model Base vs Fine-Tuned + Cross-Model M-MMLU / MMMU / DocVQA Comparison */}
+        <div className="grid grid-cols-1 lg:grid-cols-12 gap-6">
+          {/* Left 6 Cols: Selected VLM Base vs Fine-Tuned Across All 6 Multimodal Benchmarks */}
+          <div className="lg:col-span-6 bg-[#1D2021] border border-[#3C3836] rounded-xl p-4 space-y-3">
+            <div className="flex items-center justify-between">
+              <div>
+                <h3 className="text-xs font-semibold text-[#FFE9B1] flex items-center gap-1.5">
+                  <BarChart3 className="w-4 h-4 text-[#8EC07C]" />
+                  <span>
+                    Base vs. Fine-Tuned VLM Profile ({vlmDashboard.selectedModel.name})
+                  </span>
+                </h3>
+                <p className="text-[11px] text-[#A89984]">
+                  Direct comparison across M-MMLU, MMMU, DocVQA, MathVista, RealWorldQA &amp; BBox IoU
+                </p>
+              </div>
+              <span className="text-[10px] font-mono px-2 py-0.5 rounded bg-[#252423] text-[#8EC07C] border border-[#3C3836]">
+                {vlmDashboard.selectedModel.visionEncoder}
+              </span>
+            </div>
+
+            <div className="h-64 w-full">
+              <ResponsiveContainer width="100%" height="100%">
+                <BarChart
+                  data={vlmDashboard.selectedModelBarChartData}
+                  margin={{ top: 10, right: 12, left: -12, bottom: 5 }}
+                >
+                  <CartesianGrid strokeDasharray="3 3" stroke="#3C3836" />
+                  <XAxis
+                    dataKey="metric"
+                    tick={{ fill: '#D5C4A1', fontSize: 11, fontFamily: 'JetBrainsMono Nerd Font, monospace' }}
+                  />
+                  <YAxis
+                    domain={[0, 100]}
+                    tick={{ fill: '#A89984', fontSize: 11, fontFamily: 'JetBrainsMono Nerd Font, monospace' }}
+                  />
+                  <Tooltip
+                    contentStyle={{
+                      backgroundColor: '#1D2021',
+                      borderColor: '#4A453E',
+                      borderRadius: '8px',
+                      fontSize: '12px',
+                      color: '#FFE9B1',
+                    }}
+                  />
+                  <Legend wrapperStyle={{ fontSize: '11px' }} />
+                  <Bar dataKey="Base" name="Base VLM (%)" fill="#665C54" radius={[4, 4, 0, 0]} />
+                  <Bar
+                    dataKey="FineTuned"
+                    name="Fine-Tuned VLM (%)"
+                    fill="#8EC07C"
+                    radius={[4, 4, 0, 0]}
+                  />
+                </BarChart>
+              </ResponsiveContainer>
+            </div>
+          </div>
+
+          {/* Right 6 Cols: Cross-Model VISION_VLM Leaderboard on M-MMLU, MMMU, and DocVQA */}
+          <div className="lg:col-span-6 bg-[#1D2021] border border-[#3C3836] rounded-xl p-4 space-y-3">
+            <div className="flex items-center justify-between">
+              <div>
+                <h3 className="text-xs font-semibold text-[#FFE9B1] flex items-center gap-1.5">
+                  <Award className="w-4 h-4 text-[#FABD2F]" />
+                  <span>
+                    Cross-Model VISION_VLM Triad Comparison (M-MMLU · MMMU · DocVQA)
+                  </span>
+                </h3>
+                <p className="text-[11px] text-[#A89984]">
+                  Side-by-side Fine-Tuned scores across LFM2.5-VL (450M/1.6B), Qwen3.5-VL (0.8B/2B) &amp; Gemma4-VL (E2B/E4B)
+                </p>
+              </div>
+              <span className="text-[10px] font-mono px-2 py-0.5 rounded bg-[#252423] text-[#FABD2F] border border-[#3C3836]">
+                Triad Leaderboard
+              </span>
+            </div>
+
+            <div className="h-64 w-full">
+              <ResponsiveContainer width="100%" height="100%">
+                <BarChart
+                  data={vlmDashboard.crossModelTriadChartData}
+                  margin={{ top: 10, right: 12, left: -12, bottom: 5 }}
+                >
+                  <CartesianGrid strokeDasharray="3 3" stroke="#3C3836" />
+                  <XAxis
+                    dataKey="modelShortName"
+                    tick={{ fill: '#D5C4A1', fontSize: 10, fontFamily: 'JetBrainsMono Nerd Font, monospace' }}
+                  />
+                  <YAxis
+                    domain={[0, 100]}
+                    tick={{ fill: '#A89984', fontSize: 11, fontFamily: 'JetBrainsMono Nerd Font, monospace' }}
+                  />
+                  <Tooltip
+                    contentStyle={{
+                      backgroundColor: '#1D2021',
+                      borderColor: '#4A453E',
+                      borderRadius: '8px',
+                      fontSize: '12px',
+                      color: '#FFE9B1',
+                    }}
+                  />
+                  <Legend wrapperStyle={{ fontSize: '11px' }} />
+                  <Bar dataKey="M-MMLU" fill="#8EC07C" radius={[3, 3, 0, 0]} />
+                  <Bar dataKey="MMMU" fill="#83A598" radius={[3, 3, 0, 0]} />
+                  <Bar dataKey="DocVQA" fill="#B8BB26" radius={[3, 3, 0, 0]} />
+                </BarChart>
+              </ResponsiveContainer>
+            </div>
+          </div>
+        </div>
+
+        {/* VISION_VLM Registry Table: Base vs Fine-Tuned M-MMLU, MMMU, DocVQA & Spatial Metrics */}
+        <div className="overflow-x-auto rounded-xl border border-[#3C3836] bg-[#1D2021]">
+          <table className="w-full text-left border-collapse">
+            <thead>
+              <tr className="border-b border-[#3C3836] text-[11px] font-mono uppercase text-[#A89984] bg-[#252423]">
+                <th className="py-2.5 px-3">VISION_VLM Model</th>
+                <th className="py-2.5 px-3">Vision Tower</th>
+                <th className="py-2.5 px-3 text-right">M-MMLU (Base → FT)</th>
+                <th className="py-2.5 px-3 text-right">MMMU (Base → FT)</th>
+                <th className="py-2.5 px-3 text-right">DocVQA (Base → FT)</th>
+                <th className="py-2.5 px-3 text-right">MathVista</th>
+                <th className="py-2.5 px-3 text-right">BBox IoU</th>
+                <th className="py-2.5 px-3 text-right">Avg Triad Δ</th>
+              </tr>
+            </thead>
+            <tbody className="divide-y divide-[#3C3836] text-xs font-mono tabular-nums">
+              {vlmDashboard.registryTableRows.map((row) => {
+                const isSelected = row.modelId === vlmDashboard.selectedModel.id;
+                return (
+                  <tr
+                    key={row.modelId}
+                    onClick={() => handleSelectVisionModel(row.modelId)}
+                    className={`cursor-pointer transition-colors ${
+                      isSelected ? 'bg-[#458588]/25' : 'hover:bg-[#252423]/70'
+                    }`}
+                  >
+                    <td className="py-2.5 px-3 font-sans">
+                      <div className="font-semibold text-[#FFE9B1]">{row.modelName}</div>
+                      <div className="text-[10px] font-mono text-[#A89984]">
+                        {row.architecture}-VL · {row.totalParamsBillions}B · {row.visionTokensPerSec}{' '}
+                        tok/s
+                      </div>
+                    </td>
+                    <td className="py-2.5 px-3 text-[11px] text-[#D5C4A1] max-w-[200px] truncate">
+                      {row.visionEncoder}
+                    </td>
+                    <td className="py-2.5 px-3 text-right">
+                      <span className="text-[#A89984]">{row.mMmluBase}%</span> →{' '}
+                      <strong className="text-[#FFE9B1]">{row.mMmluFineTuned}%</strong>{' '}
+                      <span className="text-[#8EC07C]">(+{row.mMmluDelta}%)</span>
+                    </td>
+                    <td className="py-2.5 px-3 text-right">
+                      <span className="text-[#A89984]">{row.mmmuBase}%</span> →{' '}
+                      <strong className="text-[#FFE9B1]">{row.mmmuFineTuned}%</strong>{' '}
+                      <span className="text-[#83A598]">(+{row.mmmuDelta}%)</span>
+                    </td>
+                    <td className="py-2.5 px-3 text-right">
+                      <span className="text-[#A89984]">{row.docVqaBase}%</span> →{' '}
+                      <strong className="text-[#FFE9B1]">{row.docVqaFineTuned}%</strong>{' '}
+                      <span className="text-[#B8BB26]">(+{row.docVqaDelta}%)</span>
+                    </td>
+                    <td className="py-2.5 px-3 text-right text-[#D5C4A1]">
+                      {row.mathVistaFineTuned}%
+                    </td>
+                    <td className="py-2.5 px-3 text-right text-[#FABD2F]">
+                      {row.groundingIoUFineTuned}%
+                    </td>
+                    <td className="py-2.5 px-3 text-right font-bold text-[#8EC07C]">
+                      +{row.averageCoreTriadDelta}%
+                    </td>
+                  </tr>
+                );
+              })}
+            </tbody>
+          </table>
         </div>
       </section>
 

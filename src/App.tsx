@@ -1236,6 +1236,7 @@ export default function App() {
           ...vm,
           status: 'FINE_TUNED_READY',
           fineTunedVisionBenchmarks: {
+            mMmlu: Number(Math.min(85.0, current.mMmlu + 2.5).toFixed(1)),
             mmmu: Number(Math.min(82.0, current.mmmu + 2.4).toFixed(1)),
             docVqa: Number(Math.min(97.5, current.docVqa + 1.9).toFixed(1)),
             mathVista: Number(Math.min(86.0, current.mathVista + 2.6).toFixed(1)),
@@ -1512,7 +1513,7 @@ export default function App() {
                   : 'text-[#A89984] hover:text-[#FFE9B1]'
               }`}
             >
-              Vision-Language Pipeline (Qwen3.5-VL · LFM2.5-VL 450M/1.6B)
+              Vision-Language Pipeline (Qwen3.5-VL · LFM2.5-VL · Gemma4-VL)
             </button>
           </div>
         </div>
@@ -1613,6 +1614,11 @@ export default function App() {
               onExplainBenchmarksWithLlm={handleExplainBenchmarksWithLlm}
               onSendFlaggedPromptToDatasetStudio={handleSendFlaggedPromptToDatasetStudio}
               isExplaining={isExplainingBenchmarks}
+              visionModels={visionModels}
+              selectedVisionModelId={selectedVisionModelId}
+              onSelectVisionModel={setSelectedVisionModelId}
+              onTriggerVisionFineTune={handleTriggerVisionFineTune}
+              pipelineTrack={pipelineTrack}
             />
           </div>
         )}
