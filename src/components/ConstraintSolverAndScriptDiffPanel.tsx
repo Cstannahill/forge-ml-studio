@@ -17,6 +17,8 @@ import {
   HyperparameterConfig,
   PreferenceAlignmentMethod,
   TargetFormat,
+  MixedPrecisionStrategy,
+  computeLayerWiseMixedPrecisionPlan,
   computeSideBySideScriptDiff,
   generateExecutableRunBundle,
   solveHardwareAndTimeBudgetConstraints,
@@ -100,6 +102,22 @@ export const ConstraintSolverAndScriptDiffPanel: React.FC<
   );
   const [showChangedOnly, setShowChangedOnly] = useState<boolean>(false);
   const [copiedSide, setCopiedSide] = useState<'left' | 'right' | null>(null);
+
+  // 3. Layer-Wise Mixed-Precision Bit-Allocation Planner State
+  const [mixedPrecisionStrategy, setMixedPrecisionStrategy] =
+    useState<MixedPrecisionStrategy>('HETEROGENEOUS_SALIENCE_KQUANT');
+  const [protectVisionConnector, setProtectVisionConnector] = useState<boolean>(true);
+  const [copiedHeteroCli, setCopiedHeteroCli] = useState<boolean>(false);
+
+  const mixedPrecisionPlan = computeLayerWiseMixedPrecisionPlan({
+    modelId,
+    modelName,
+    architecture,
+    paramsBillions,
+    modality: modelId.toLowerCase().includes('vl') || modelId.toLowerCase().includes('vision') ? 'VISION_VLM' : 'TEXT_LLM',
+    strategy: mixedPrecisionStrategy,
+    protectVisionConnector,
+  });
 
   // Build baseline untuned bundle for Mode 1 (CONFIG_DELTA)
   const baselineUntunedBundle = generateExecutableRunBundle({
@@ -733,6 +751,206 @@ sft_config = SFTConfig(
           </table>
         </div>
       </section>
+
+      {/* PART C: Layer-Wise Mixed-Precision Bit-Allocation Planner (AWQ / Heterogeneous GGUF K-Quants) */}
+      <section
+        aria-label="Layer-Wise Mixed-Precision Bit-Allocation Planner"
+        className="bg-[#111827] border border-slate-800/90 rounded-lg p-5 space-y-5"
+      >
+        <div className="flex flex-col gap-3 pb-4 border-b border-slate-800/80">
+          <div className="flex flex-wrap items-center justify-between gap-2">
+            <div className="flex flex-wrap items-center gap-2">
+              <span className="text-[11px] font-mono uppercase tracking-wider px-2.5 py-0.5 rounded bg-emerald-500/15 text-emerald-300 border border-emerald-500/30">
+                Hessian Salience &amp; Super-Weight Bit Allocation
+              </span>
+              <span className="text-[11px] font-mono px-2.5 py-0.5 rounded bg-slate-800 text-amber-300 font-semibold">
+                {mixedPrecisionPlan.effectiveBitsPerWeight} Effective bpw · +{mixedPrecisionPlan.perplexityRecoveredPct}% Perplexity Recovery vs. Uniform Q4
+              </span>
+            </div>
+
+            <label className="inline-flex items-center gap-1.5 px-3 py-1 rounded bg-[#0B0F17] border border-slate-800 text-xs font-mono text-slate-300 cursor-pointer">
+              <input
+                type="checkbox"
+                checked={protectVisionConnector}
+                onChange={(e) => setProtectVisionConnector(e.target.checked)}
+                className="rounded border-slate-700 bg-slate-900 text-emerald-500"
+              />
+              <span>Pin Vision Projector (mmproj) at FP16</span>
+            </label>
+          </div>
+
+          <div>
+            <h2 className="text-base font-semibold text-slate-100 flex items-center gap-2">
+              <Sliders className="w-4 h-4 text-emerald-400 shrink-0" />
+              <span>
+                Layer-Wise Mixed-Precision Bit-Allocation Planner (AWQ / Heterogeneous GGUF K-Quants)
+              </span>
+            </h2>
+            <p className="text-xs text-slate-400 mt-0.5">
+              Protects high-salience boundary blocks (<code className="font-mono text-slate-300">blk.0</code>, <code className="font-mono text-slate-300">lm_head</code>, <code className="font-mono text-slate-300">attn_v</code>, <code className="font-mono text-slate-300">ffn_down</code>) at 6-bit/8-bit precision while compressing flat-spectrum interior layers to 3-bit/4-bit.
+            </p>
+          </div>
+
+          <div className="flex flex-wrap items-center gap-1.5 bg-[#0B0F17] p-1 rounded-lg border border-slate-800 self-start">
+            {(
+              [
+                {
+                  id: 'HETEROGENEOUS_SALIENCE_KQUANT',
+                  label: '1. Salience-Guided Heterogeneous K-Quant (4.62 bpw)',
+                },
+                {
+                  id: 'ULTRA_EDGE_3_5_BPW',
+                  label: '2. Ultra-Compact Edge Profile (3.68 bpw)',
+                },
+                {
+                  id: 'HIGH_FIDELITY_5_2_BPW',
+                  label: '3. High-Fidelity Reasoning Profile (5.35 bpw)',
+                },
+              ] as const
+            ).map((opt) => (
+              <button
+                key={opt.id}
+                type="button"
+                onClick={() => setMixedPrecisionStrategy(opt.id)}
+                className={`px-3 py-1.5 text-xs font-mono rounded transition-colors whitespace-nowrap ${
+                  mixedPrecisionStrategy === opt.id
+                    ? 'bg-emerald-600 text-white font-semibold'
+                    : 'text-slate-400 hover:text-slate-200'
+                }`}
+              >
+                {opt.label}
+              </button>
+            ))}
+          </div>
+        </div>
+
+        {/* 4-Card Telemetry Strip */}
+        <div className="grid grid-cols-2 sm:grid-cols-4 gap-3 font-mono text-xs tabular-nums">
+          <div className="bg-[#0B0F17] border border-slate-800 rounded-lg p-3">
+            <div className="text-[11px] text-slate-400">Effective Bits-per-Weight</div>
+            <div className="text-base font-bold text-emerald-400 mt-1">
+              {mixedPrecisionPlan.effectiveBitsPerWeight} bpw
+            </div>
+            <div className="text-[10px] text-slate-500 mt-0.5">
+              -{mixedPrecisionPlan.vramSavedVsFp16Pct}% footprint vs FP16
+            </div>
+          </div>
+
+          <div className="bg-[#0B0F17] border border-slate-800 rounded-lg p-3">
+            <div className="text-[11px] text-slate-400">Artifact Footprint</div>
+            <div className="text-base font-bold text-blue-300 mt-1">
+              {mixedPrecisionPlan.mixedPrecisionSizeGb} GB
+            </div>
+            <div className="text-[10px] text-slate-500 mt-0.5">
+              Uniform Q4_K_M: {mixedPrecisionPlan.uniformQ4SizeGb} GB
+            </div>
+          </div>
+
+          <div className="bg-[#0B0F17] border border-slate-800 rounded-lg p-3">
+            <div className="text-[11px] text-slate-400">Perplexity Degradation (&Delta;PPL)</div>
+            <div className="text-base font-bold text-amber-300 mt-1">
+              +{mixedPrecisionPlan.mixedPrecisionPerplexityDelta} PPL
+            </div>
+            <div className="text-[10px] text-slate-500 mt-0.5">
+              Uniform Q4: +{mixedPrecisionPlan.uniformQ4PerplexityDelta} PPL
+            </div>
+          </div>
+
+          <div className="bg-[#0B0F17] border border-slate-800 rounded-lg p-3">
+            <div className="text-[11px] text-slate-400">PPL Degradation Recovered</div>
+            <div className="text-base font-bold text-purple-300 mt-1">
+              {mixedPrecisionPlan.perplexityRecoveredPct}% Recovered
+            </div>
+            <div className="text-[10px] text-slate-500 mt-0.5">
+              Super-weight outlier channels protected
+            </div>
+          </div>
+        </div>
+
+        {/* Layer-Block Bit Allocation Table + CLI */}
+        <div className="grid grid-cols-1 lg:grid-cols-12 gap-6 items-stretch">
+          <div className="lg:col-span-7 bg-[#0B0F17] border border-slate-800 rounded-lg p-4 space-y-2.5">
+            <div className="text-xs font-semibold text-slate-200">
+              Per-Block Hessian Sensitivity &amp; Bitwidth Allocation Matrix
+            </div>
+            <div className="space-y-2">
+              {mixedPrecisionPlan.layerAllocations.map((layer) => (
+                <div
+                  key={layer.blockId}
+                  className="p-2.5 rounded bg-[#111827] border border-slate-800/90 space-y-1"
+                >
+                  <div className="flex flex-wrap items-center justify-between gap-2 text-xs font-mono">
+                    <span className="font-semibold text-slate-100">{layer.blockLabel}</span>
+                    <div className="flex items-center gap-2">
+                      <span className="text-slate-400 text-[11px]">
+                        Hessian: <strong className="text-amber-300">{layer.hessianSensitivity}/10</strong>
+                      </span>
+                      <span className="px-2 py-0.5 rounded bg-emerald-500/15 text-emerald-300 font-semibold">
+                        {layer.assignedPrecision} ({layer.bitsPerWeight} bpw)
+                      </span>
+                    </div>
+                  </div>
+                  <div className="text-[11px] font-mono text-blue-300">
+                    Tensors: {layer.tensorPattern}
+                  </div>
+                  <div className="text-[11px] text-slate-400">{layer.rationale}</div>
+                </div>
+              ))}
+            </div>
+          </div>
+
+          <div className="lg:col-span-5 bg-[#0B0F17] border border-slate-800 rounded-lg p-4 flex flex-col justify-between space-y-3">
+            <div className="space-y-2">
+              <div className="flex items-center justify-between">
+                <span className="text-xs font-mono font-semibold text-slate-200">
+                  Heterogeneous llama-quantize Tensor-Type CLI
+                </span>
+                <button
+                  type="button"
+                  onClick={() => {
+                    navigator.clipboard?.writeText(
+                      mixedPrecisionPlan.llamaQuantizeHeterogeneousCli
+                    );
+                    setCopiedHeteroCli(true);
+                    setTimeout(() => setCopiedHeteroCli(false), 1500);
+                  }}
+                  className="inline-flex items-center gap-1 px-2.5 py-1 text-[11px] font-mono text-slate-200 bg-slate-800 hover:bg-slate-700 rounded"
+                >
+                  {copiedHeteroCli ? (
+                    <>
+                      <Check className="w-3 h-3 text-emerald-400" />
+                      <span>Copied CLI</span>
+                    </>
+                  ) : (
+                    <>
+                      <Copy className="w-3 h-3" />
+                      <span>Copy CLI</span>
+                    </>
+                  )}
+                </button>
+              </div>
+              <pre className="p-3 rounded bg-[#111827] border border-slate-800 text-[11px] font-mono text-emerald-300 overflow-x-auto leading-relaxed whitespace-pre">
+                {mixedPrecisionPlan.llamaQuantizeHeterogeneousCli}
+              </pre>
+            </div>
+
+            <div className="p-3 rounded bg-[#111827] border border-slate-800 text-[11px] font-mono text-slate-300 space-y-1">
+              <div className="text-amber-300 font-semibold">
+                Why Heterogeneous K-Quants Beat Uniform Q4:
+              </div>
+              <div>
+                • Keeps <code className="text-emerald-300">token_embd</code> and{' '}
+                <code className="text-emerald-300">output.weight</code> at Q8_0 so tool-call JSON delimiters never suffer logit rounding drift.
+              </div>
+              <div>
+                • Protects <code className="text-emerald-300">blk.0</code> and{' '}
+                <code className="text-emerald-300">ffn_down</code> super-weights while saving VRAM on interior Q/K matrices.
+              </div>
+            </div>
+          </div>
+        </div>
+      </section>
     </div>
   );
 };
+

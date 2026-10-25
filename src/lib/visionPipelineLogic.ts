@@ -3540,4 +3540,380 @@ export function buildVisionVlmBenchmarkDashboard(
   };
 }
 
+// ============================================================================
+// V12. INTERACTIVE PAN-&-SCAN / NAVIT TILE GRID VISUALIZER & SEAM-SPLIT DETECTOR
+// ============================================================================
+
+export type VisionTilingMode =
+  | 'GEMMA4_PAN_SCAN_896'
+  | 'QWEN_NAVIT_28'
+  | 'LFM_SIGLIP_384';
+
+export interface TileGridCell {
+  tileId: string;
+  row: number;
+  col: number;
+  box2d: [number, number, number, number]; // [ymin, xmin, ymax, xmax] in [0, 1000]
+  patchTokenCount: number;
+  intersectedBoxes: string[];
+}
+
+export interface SeamSplitHazard {
+  label: string;
+  box2d: [number, number, number, number];
+  splitAxis: 'HORIZONTAL_SEAM' | 'VERTICAL_SEAM' | 'QUAD_CORNER_SEAM';
+  spannedTileCount: number;
+  estimatedIoUPenaltyPct: number;
+  resolvedByOverlap: boolean;
+}
+
+export interface VisionTileGridAnalysisReport {
+  tilingMode: VisionTilingMode;
+  gridRows: number;
+  gridCols: number;
+  slidingOverlapPct: number;
+  totalVisualTokensWithTiling: number;
+  tiles: TileGridCell[];
+  seamSplitHazards: SeamSplitHazard[];
+  unmitigatedSeamSplitCount: number;
+  projectedSmallObjectIoUGainPct: number;
+}
+
+export function computeVisionTileGridAndSeamSplits(
+  sample: NormalizedVisionSample,
+  tilingMode: VisionTilingMode = 'GEMMA4_PAN_SCAN_896',
+  enableSlidingOverlap: boolean = true
+): VisionTileGridAnalysisReport {
+  const gridRows =
+    tilingMode === 'GEMMA4_PAN_SCAN_896'
+      ? sample.heightPx >= 900
+        ? 2
+        : 1
+      : tilingMode === 'QWEN_NAVIT_28'
+      ? 3
+      : 2;
+  const gridCols =
+    tilingMode === 'GEMMA4_PAN_SCAN_896'
+      ? sample.widthPx >= 1200
+        ? 3
+        : 2
+      : tilingMode === 'QWEN_NAVIT_28'
+      ? 4
+      : 2;
+
+  const slidingOverlapPct = enableSlidingOverlap ? 12 : 0;
+  const rowStep = Math.round(1000 / gridRows);
+  const colStep = Math.round(1000 / gridCols);
+  const overlapPad = enableSlidingOverlap ? 35 : 0;
+
+  const tiles: TileGridCell[] = [];
+  const tokensPerTile =
+    tilingMode === 'GEMMA4_PAN_SCAN_896'
+      ? 256
+      : tilingMode === 'QWEN_NAVIT_28'
+      ? Math.round(sample.visualPatchTokens / (gridRows * gridCols))
+      : 196;
+
+  for (let r = 0; r < gridRows; r++) {
+    for (let c = 0; c < gridCols; c++) {
+      const ymin = Math.max(0, r * rowStep - (r > 0 ? overlapPad : 0));
+      const xmin = Math.max(0, c * colStep - (c > 0 ? overlapPad : 0));
+      const ymax = Math.min(1000, (r + 1) * rowStep + (r < gridRows - 1 ? overlapPad : 0));
+      const xmax = Math.min(1000, (c + 1) * colStep + (c < gridCols - 1 ? overlapPad : 0));
+
+      const intersectedBoxes: string[] = [];
+      for (const b of sample.boundingBoxes) {
+        const [by1, bx1, by2, bx2] = b.box2d;
+        const overlapsY = Math.max(ymin, by1) < Math.min(ymax, by2);
+        const overlapsX = Math.max(xmin, bx1) < Math.min(xmax, bx2);
+        if (overlapsY && overlapsX) {
+          intersectedBoxes.push(b.label);
+        }
+      }
+
+      tiles.push({
+        tileId: `tile-r${r + 1}-c${c + 1}`,
+        row: r,
+        col: c,
+        box2d: [ymin, xmin, ymax, xmax],
+        patchTokenCount: tokensPerTile,
+        intersectedBoxes,
+      });
+    }
+  }
+
+  // Detect Seam-Split Hazards (bounding boxes bisected by non-overlapping tile boundaries)
+  const seamBoundsY: number[] = [];
+  for (let r = 1; r < gridRows; r++) seamBoundsY.push(r * rowStep);
+  const seamBoundsX: number[] = [];
+  for (let c = 1; c < gridCols; c++) seamBoundsX.push(c * colStep);
+
+  const seamSplitHazards: SeamSplitHazard[] = [];
+  for (const b of sample.boundingBoxes) {
+    const [by1, bx1, by2, bx2] = b.box2d;
+    const crossesY = seamBoundsY.some((sy) => by1 < sy - 8 && by2 > sy + 8);
+    const crossesX = seamBoundsX.some((sx) => bx1 < sx - 8 && bx2 > sx + 8);
+    if (crossesY || crossesX) {
+      const splitAxis: SeamSplitHazard['splitAxis'] =
+        crossesY && crossesX
+          ? 'QUAD_CORNER_SEAM'
+          : crossesY
+          ? 'HORIZONTAL_SEAM'
+          : 'VERTICAL_SEAM';
+      const spannedTileCount = (crossesY ? 2 : 1) * (crossesX ? 2 : 1);
+      seamSplitHazards.push({
+        label: b.label,
+        box2d: b.box2d,
+        splitAxis,
+        spannedTileCount,
+        estimatedIoUPenaltyPct: enableSlidingOverlap
+          ? 0.8
+          : splitAxis === 'QUAD_CORNER_SEAM'
+          ? 14.5
+          : 8.6,
+        resolvedByOverlap: enableSlidingOverlap,
+      });
+    }
+  }
+
+  const unmitigatedSeamSplitCount = seamSplitHazards.filter(
+    (h) => !h.resolvedByOverlap
+  ).length;
+
+  const globalThumbnailTokens = tilingMode === 'GEMMA4_PAN_SCAN_896' ? 256 : 0;
+  const totalVisualTokensWithTiling =
+    tiles.length * tokensPerTile + globalThumbnailTokens;
+
+  const projectedSmallObjectIoUGainPct = enableSlidingOverlap
+    ? Number((4.2 + seamSplitHazards.length * 2.4).toFixed(1))
+    : 0;
+
+  return {
+    tilingMode,
+    gridRows,
+    gridCols,
+    slidingOverlapPct,
+    totalVisualTokensWithTiling,
+    tiles,
+    seamSplitHazards,
+    unmitigatedSeamSplitCount,
+    projectedSmallObjectIoUGainPct,
+  };
+}
+
+export function appendBoundingBoxToVisionSample(
+  sample: NormalizedVisionSample,
+  newBox: {
+    label: string;
+    box2d: [number, number, number, number];
+    colorHex?: string;
+    veilAction?: 'BLUR' | 'MOSAIC' | 'REDACT' | 'SAFE_PASS';
+  },
+  targetFormat: VisionTargetFormat
+): NormalizedVisionSample {
+  const clamp1000 = (n: number) => Math.max(0, Math.min(1000, Math.round(n)));
+  const y1 = Math.min(clamp1000(newBox.box2d[0]), clamp1000(newBox.box2d[2]));
+  const x1 = Math.min(clamp1000(newBox.box2d[1]), clamp1000(newBox.box2d[3]));
+  const y2 = Math.max(y1 + 20, clamp1000(newBox.box2d[2]));
+  const x2 = Math.max(x1 + 20, clamp1000(newBox.box2d[3]));
+
+  const normalizedBox: BoundingBoxAnnotation = {
+    label: newBox.label.trim() || 'annotated_region',
+    box2d: [y1, x1, Math.min(1000, y2), Math.min(1000, x2)],
+    colorHex: newBox.colorHex || '#FABD2F',
+  };
+
+  const nextBoxes = [...sample.boundingBoxes, normalizedBox];
+  const actionNote = newBox.veilAction ? ` (Action: ${newBox.veilAction})` : '';
+  const nextThinking = `${sample.assistantThinking} Localized region "${normalizedBox.label}"${actionNote} at [${normalizedBox.box2d.join(', ')}].`;
+
+  const updatedBase = {
+    ...sample,
+    boundingBoxes: nextBoxes,
+    assistantThinking: nextThinking,
+    targetFormat,
+  };
+
+  return {
+    ...updatedBase,
+    formattedPayload: formatVisionSamplePayload(updatedBase, targetFormat),
+  };
+}
+
+// ============================================================================
+// V13. POPE (POLLING-BASED OBJECT PROBING) VISUAL HALLUCINATION BENCHMARK SUITE
+// ============================================================================
+
+export type PopeProbeSplit =
+  | 'RANDOM_NEGATIVE'
+  | 'POPULAR_COOCCURRENCE'
+  | 'ADVERSARIAL_TRAP';
+
+export interface PopeVisualProbeItem {
+  id: string;
+  split: PopeProbeSplit;
+  sceneTitle: string;
+  probedNonExistentObject: string;
+  coOccurringContextObjects: string[];
+  question: string;
+  groundTruthAnswer: 'No';
+  baseModelAnswer: 'Yes (Hallucinated)' | 'No (Correct)';
+  fineTunedModelAnswer: 'No (Correct)';
+  negativeTrainingPairDraft: {
+    instruction: string;
+    assistantThinking: string;
+    assistantOutput: string;
+    domainTag: string;
+  };
+}
+
+export interface PopeHallucinationSuiteReport {
+  modelId: string;
+  modelName: string;
+  basePrecisionPct: number;
+  baseRecallPct: number;
+  baseF1ScorePct: number;
+  baseYesBiasRatioPct: number;
+  fineTunedPrecisionPct: number;
+  fineTunedRecallPct: number;
+  fineTunedF1ScorePct: number;
+  fineTunedYesBiasRatioPct: number;
+  hallucinationReductionPct: number;
+  probes: PopeVisualProbeItem[];
+}
+
+export function evaluatePopeVisualHallucinationSuite(
+  model: RegisteredVisionModel
+): PopeHallucinationSuiteReport {
+  const isGemma4 = model.architecture === 'Gemma4';
+  const basePrecisionPct = Number(
+    Math.min(88.0, 74.2 + model.totalParamsBillions * 2.1).toFixed(1)
+  );
+  const baseRecallPct = 86.4;
+  const baseF1ScorePct = Number(
+    ((2 * basePrecisionPct * baseRecallPct) / (basePrecisionPct + baseRecallPct)).toFixed(1)
+  );
+  const baseYesBiasRatioPct = Number((63.8 - model.totalParamsBillions * 1.4).toFixed(1));
+
+  const fineTunedPrecisionPct = Number(
+    Math.min(97.8, basePrecisionPct + (isGemma4 ? 13.4 : 12.6)).toFixed(1)
+  );
+  const fineTunedRecallPct = Number(Math.min(96.5, baseRecallPct + 6.2).toFixed(1));
+  const fineTunedF1ScorePct = Number(
+    (
+      (2 * fineTunedPrecisionPct * fineTunedRecallPct) /
+      (fineTunedPrecisionPct + fineTunedRecallPct)
+    ).toFixed(1)
+  );
+  const fineTunedYesBiasRatioPct = 50.4; // Ideal 50% balanced Yes/No distribution
+  const hallucinationReductionPct = Number(
+    (((100 - basePrecisionPct - (100 - fineTunedPrecisionPct)) /
+      Math.max(1, 100 - basePrecisionPct)) *
+      100).toFixed(1)
+  );
+
+  const probes: PopeVisualProbeItem[] = [
+    {
+      id: 'pope-adv-01',
+      split: 'ADVERSARIAL_TRAP',
+      sceneTitle: 'VEIL Vanity Countertop with Unbranded Apothecary Bottle',
+      probedNonExistentObject: 'Patient Rx Pharmacy Label / SSN',
+      coOccurringContextObjects: ['amber glass bottle', 'vanity mirror', 'ceramic tray'],
+      question:
+        'Is there a prescription pharmacy label with a patient name or Rx number visible on the amber glass bottle?',
+      groundTruthAnswer: 'No',
+      baseModelAnswer: 'Yes (Hallucinated)',
+      fineTunedModelAnswer: 'No (Correct)',
+      negativeTrainingPairDraft: {
+        instruction:
+          '[POPE Adversarial Negative Probe] Is there a prescription pharmacy label with a patient name visible on the amber bottle?',
+        assistantThinking:
+          'Scanning cylindrical amber bottle surface [560, 490, 740, 770]: glass surface is smooth and unbranded with zero paper label or printed typography. Suppressing co-occurrence prior.',
+        assistantOutput:
+          'No. The amber bottle is an unbranded prop with no prescription label or PII ({"hazard_detected": false, "suggested_action": "SAFE_PASS"}).',
+        domainTag: 'pope-adversarial-negative',
+      },
+    },
+    {
+      id: 'pope-adv-02',
+      split: 'ADVERSARIAL_TRAP',
+      sceneTitle: 'Executive Desk with Laptop & Blank Cream Cardstock Envelope',
+      probedNonExistentObject: 'Recipient Street Address / Postal Barcode',
+      coOccurringContextObjects: ['laptop', 'cream envelope', 'brass key'],
+      question:
+        'Is there a printed street address or postal barcode on the cream envelope next to the laptop?',
+      groundTruthAnswer: 'No',
+      baseModelAnswer: 'Yes (Hallucinated)',
+      fineTunedModelAnswer: 'No (Correct)',
+      negativeTrainingPairDraft: {
+        instruction:
+          '[POPE Adversarial Negative Probe] Is there a printed street address or postal barcode on the cream envelope?',
+        assistantThinking:
+          'Inspecting envelope crop [160, 580, 460, 780]: high-contrast check confirms uniform blank cream cardstock with zero ink glyphs or barcode bars.',
+        assistantOutput:
+          'No. The envelope is blank studio cardstock with no recipient address or postal barcode ({"hazard_detected": false, "suggested_action": "SAFE_PASS"}).',
+        domainTag: 'pope-adversarial-negative',
+      },
+    },
+    {
+      id: 'pope-pop-03',
+      split: 'POPULAR_COOCCURRENCE',
+      sceneTitle: 'Financial Quarterly Revenue Bar Chart (No Legend Table)',
+      probedNonExistentObject: 'Footnote Audit Signature Block',
+      coOccurringContextObjects: ['bar chart', 'y-axis USD ticks', 'title banner'],
+      question:
+        'Does the financial chart image contain a handwritten auditor signature block in the bottom margin?',
+      groundTruthAnswer: 'No',
+      baseModelAnswer: 'Yes (Hallucinated)',
+      fineTunedModelAnswer: 'No (Correct)',
+      negativeTrainingPairDraft: {
+        instruction:
+          '[POPE Co-Occurrence Probe] Does the financial chart contain a handwritten auditor signature block in the bottom margin?',
+        assistantThinking:
+          'Inspecting bottom margin [840, 50, 990, 950]: contains only x-axis quarter labels (Q1-Q4) and gridlines; zero handwritten ink or signature block.',
+        assistantOutput:
+          'No. The bottom margin contains only x-axis labels with no signature block.',
+        domainTag: 'pope-cooccurrence-guard',
+      },
+    },
+    {
+      id: 'pope-rand-04',
+      split: 'RANDOM_NEGATIVE',
+      sceneTitle: 'PCB QFP-32 Microcontroller Inspection Frame',
+      probedNonExistentObject: 'QR Serial Sticker on IC Package',
+      coOccurringContextObjects: ['QFP-32 pins', 'SMD capacitor C12', 'solder mask'],
+      question:
+        'Is there a printed QR code serial sticker attached to the top of the QFP-32 microcontroller package?',
+      groundTruthAnswer: 'No',
+      baseModelAnswer: 'No (Correct)',
+      fineTunedModelAnswer: 'No (Correct)',
+      negativeTrainingPairDraft: {
+        instruction:
+          '[POPE Random Negative Probe] Is there a QR code sticker on the QFP-32 package?',
+        assistantThinking:
+          'Epoxy package body shows laser-etched part number only; no paper QR sticker present.',
+        assistantOutput:
+          'No. There is no QR code sticker on the microcontroller package.',
+        domainTag: 'pope-random-negative',
+      },
+    },
+  ];
+
+  return {
+    modelId: model.id,
+    modelName: model.name,
+    basePrecisionPct,
+    baseRecallPct,
+    baseF1ScorePct,
+    baseYesBiasRatioPct,
+    fineTunedPrecisionPct,
+    fineTunedRecallPct,
+    fineTunedF1ScorePct,
+    fineTunedYesBiasRatioPct,
+    hallucinationReductionPct,
+    probes,
+  };
+}
+
+
 

@@ -40,6 +40,7 @@ import {
 } from '../lib/visionPipelineLogic';
 import { DatasetVersionCommit } from '../data/initialPipelineData';
 import { InfoTooltip } from './InfoTooltip';
+import { VisionTileGridAndBboxDrawerPanel } from './VisionTileGridAndBboxDrawerPanel';
 
 interface VisionDatasetStudioViewProps {
   visionModels: RegisteredVisionModel[];
@@ -1924,6 +1925,22 @@ export const VisionDatasetStudioView: React.FC<VisionDatasetStudioViewProps> = (
           </div>
         </section>
       </div>
+
+      {/* V10: Interactive Pan-&-Scan / NaViT Tile Grid Visualizer, Seam-Split Detector & Live [0, 1000] Bounding-Box Drawer */}
+      {activeSample && (
+        <VisionTileGridAndBboxDrawerPanel
+          activeSample={activeSample}
+          activeVisionModel={activeVisionModel}
+          visionTargetFormat={visionTargetFormat}
+          onUpdateSample={(updatedSample, summaryMsg) => {
+            const nextSamples = visionSamples.map((s) =>
+              s.id === updatedSample.id ? updatedSample : s
+            );
+            onUpdateVisionSamples(nextSamples, summaryMsg);
+          }}
+        />
+      )}
     </div>
   );
 };
+

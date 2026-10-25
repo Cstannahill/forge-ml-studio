@@ -29,6 +29,7 @@ import {
   YAxis,
 } from 'recharts';
 import { VeilVisionRedactionCanvas } from './VeilVisionRedactionCanvas';
+import { PopeAndHardNegativeMinerPanel } from './PopeAndHardNegativeMinerPanel';
 import {
   ArchitectureFamily,
   PlainLanguageComparison,
@@ -1573,6 +1574,25 @@ export const ModelBenchmarksView: React.FC<ModelBenchmarksViewProps> = ({
           ))}
         </div>
       </section>
+
+      {/* Section 06B: POPE Adversarial Visual Hallucination Suite & Closed-Loop Hard-Negative DPO/ORPO Preference Pair Miner */}
+      <PopeAndHardNegativeMinerPanel
+        modality={pipelineTrack}
+        activeModelId={
+          pipelineTrack === 'VISION_VLM'
+            ? vlmDashboard.selectedModel.id
+            : selectedModel.id
+        }
+        activeModelName={
+          pipelineTrack === 'VISION_VLM'
+            ? vlmDashboard.selectedModel.name
+            : selectedModel.name
+        }
+        activeVisionModel={vlmDashboard.selectedModel}
+        onSendMinedPairToDatasetStudio={(draft) => {
+          onSendFlaggedPromptToDatasetStudio?.(draft);
+        }}
+      />
 
       {/* Section 07: Interactive Vision Grounding & VEIL Privacy Auto-Redaction Canvas */}
       <VeilVisionRedactionCanvas />

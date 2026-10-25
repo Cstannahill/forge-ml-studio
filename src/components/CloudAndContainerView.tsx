@@ -13,6 +13,8 @@ import {
   LocalInferenceRuntime,
   LoggingFramework,
   QuantizationMode,
+  SPECULATIVE_MODEL_PAIRINGS,
+  computeSpeculativeDecodingPairingPlan,
   estimateVramRequirements,
   generateContainerArtifacts,
   generateLocalInferenceAndSdkBundle,
@@ -55,6 +57,17 @@ export const CloudAndContainerView: React.FC<CloudAndContainerViewProps> = ({
   const [localTemperature, setLocalTemperature] = useState<number>(0.2);
   const [localRepeatPenalty, setLocalRepeatPenalty] = useState<number>(1.08);
   const [sdkLangTab, setSdkLangTab] = useState<'python' | 'typescript' | 'curl'>('python');
+
+  // Speculative Decoding Draft-Target Pairing Studio State
+  const [specPairingId, setSpecPairingId] = useState<string>('spec-gemma4-vl');
+  const [specGamma, setSpecGamma] = useState<number>(6);
+  const [specTemp, setSpecTemp] = useState<number>(0.2);
+
+  const speculativePlan = computeSpeculativeDecodingPairingPlan({
+    pairingId: specPairingId,
+    lookaheadDraftTokensGamma: specGamma,
+    domainTemperature: specTemp,
+  });
 
   const localInferenceBundle = generateLocalInferenceAndSdkBundle({
     modelName: selectedModel.name,
@@ -631,7 +644,226 @@ export const CloudAndContainerView: React.FC<CloudAndContainerViewProps> = ({
           </div>
         </div>
       </section>
+
+      {/* Section 04: Speculative Decoding Draft-Target Pairing Studio (llama.cpp & vLLM 2.5x Speedup Planner) */}
+      <section
+        aria-label="Speculative Decoding Draft-Target Pairing Studio"
+        className="bg-[#111827] border border-slate-800/90 rounded-lg p-5 space-y-5"
+      >
+        <div className="flex flex-col gap-3 pb-4 border-b border-slate-800/80">
+          <div className="flex flex-wrap items-center justify-between gap-2">
+            <div className="flex flex-wrap items-center gap-2">
+              <span className="text-[11px] font-mono uppercase tracking-wider px-2.5 py-0.5 rounded bg-emerald-500/15 text-emerald-300 border border-emerald-500/30">
+                Lossless Speculative Lookahead Acceleration
+              </span>
+              <span className="text-[11px] font-mono px-2.5 py-0.5 rounded bg-blue-500/15 text-blue-300 font-semibold">
+                {speculativePlan.speedupMultiplier}x Decode Speedup · {speculativePlan.baselineTargetTokPerSec} → {speculativePlan.projectedSpeculativeTokPerSec} tok/s
+              </span>
+            </div>
+
+            <span className="text-xs font-mono text-emerald-400">
+              Tokenizer Verified: {speculativePlan.pairing.sharedTokenizerName}
+            </span>
+          </div>
+
+          <div>
+            <h2 className="text-base font-semibold text-slate-100 flex items-center gap-2">
+              <Server className="w-4 h-4 text-emerald-400 shrink-0" />
+              <span>
+                04. Speculative Decoding Draft-Target Pairing Studio (llama.cpp &amp; vLLM 2.5x Speedup Planner)
+              </span>
+            </h2>
+            <p className="text-xs text-slate-400 mt-0.5">
+              Pair your fine-tuned Target checkpoint (e.g., <code className="font-mono text-slate-300">Gemma-4-E4B-Vision-IT</code> or <code className="font-mono text-slate-300">Qwen3.5-2B</code>) with a same-vocabulary ultra-compact Draft model (<code className="font-mono text-slate-300">E2B</code> / <code className="font-mono text-slate-300">0.8B</code> / <code className="font-mono text-slate-300">350M</code>) to verify {speculativePlan.lookaheadDraftTokensGamma} tokens in a single parallel forward pass with mathematically identical output distribution.
+            </p>
+          </div>
+
+          {/* Family Pairing Selector Buttons */}
+          <div className="flex flex-wrap items-center gap-1.5 pt-1">
+            {SPECULATIVE_MODEL_PAIRINGS.map((pair) => (
+              <button
+                key={pair.id}
+                type="button"
+                onClick={() => setSpecPairingId(pair.id)}
+                className={`px-3 py-1.5 text-xs font-mono rounded-lg border transition-colors whitespace-nowrap ${
+                  specPairingId === pair.id
+                    ? 'bg-emerald-600 text-white border-emerald-500 font-semibold'
+                    : 'bg-[#0B0F17] border-slate-800 text-slate-300 hover:text-slate-100'
+                }`}
+              >
+                {pair.familyLabel}
+              </button>
+            ))}
+          </div>
+        </div>
+
+        {/* 4-Card Speculative Telemetry Strip */}
+        <div className="grid grid-cols-2 sm:grid-cols-4 gap-3 font-mono text-xs tabular-nums">
+          <div className="bg-[#0B0F17] border border-slate-800 rounded-lg p-3">
+            <div className="text-[11px] text-slate-400">Net Decode Throughput</div>
+            <div className="text-base font-bold text-emerald-400 mt-1">
+              {speculativePlan.projectedSpeculativeTokPerSec} tok/s ({speculativePlan.speedupMultiplier}x)
+            </div>
+            <div className="text-[10px] text-slate-500 mt-0.5">
+              Target Alone: {speculativePlan.baselineTargetTokPerSec} tok/s
+            </div>
+          </div>
+
+          <div className="bg-[#0B0F17] border border-slate-800 rounded-lg p-3">
+            <div className="text-[11px] text-slate-400">Token Acceptance Rate (&alpha;)</div>
+            <div className="text-base font-bold text-blue-300 mt-1">
+              {speculativePlan.effectiveAcceptanceRatePct}% Accepted
+            </div>
+            <div className="text-[10px] text-slate-500 mt-0.5">
+              Lookahead Draft Length &gamma;={speculativePlan.lookaheadDraftTokensGamma}
+            </div>
+          </div>
+
+          <div className="bg-[#0B0F17] border border-slate-800 rounded-lg p-3">
+            <div className="text-[11px] text-slate-400">Combined VRAM Footprint</div>
+            <div className="text-base font-bold text-amber-300 mt-1">
+              {speculativePlan.combinedVramGb} GB Total
+            </div>
+            <div className="text-[10px] text-slate-500 mt-0.5">
+              Draft Overhead: +{speculativePlan.draftOverheadMb} MB
+            </div>
+          </div>
+
+          <div className="bg-[#0B0F17] border border-slate-800 rounded-lg p-3">
+            <div className="text-[11px] text-slate-400">Vocabulary Alignment</div>
+            <div className="text-base font-bold text-purple-300 mt-1">
+              {speculativePlan.pairing.vocabSize.toLocaleString()} Tokens
+            </div>
+            <div className="text-[10px] text-emerald-400 mt-0.5">
+              100% Exact Logit Verification
+            </div>
+          </div>
+        </div>
+
+        {/* Controls + Dual Server CLI Snippets */}
+        <div className="grid grid-cols-1 lg:grid-cols-12 gap-6 items-stretch">
+          {/* Left 5 Cols: Pairing Architecture & Lookahead Sliders */}
+          <div className="lg:col-span-5 bg-[#0B0F17] border border-slate-800 rounded-lg p-4 space-y-4">
+            <div className="space-y-2 text-xs font-mono">
+              <div className="p-2.5 rounded bg-[#111827] border border-slate-800 flex items-center justify-between">
+                <span className="text-slate-400">Target Model (Verifier):</span>
+                <span className="text-emerald-300 font-semibold">
+                  {speculativePlan.pairing.targetModelName}
+                </span>
+              </div>
+              <div className="p-2.5 rounded bg-[#111827] border border-slate-800 flex items-center justify-between">
+                <span className="text-slate-400">Draft Model (Speculator):</span>
+                <span className="text-amber-300 font-semibold">
+                  {speculativePlan.pairing.draftModelName}
+                </span>
+              </div>
+            </div>
+
+            <div>
+              <div className="flex items-center justify-between text-xs mb-1">
+                <label htmlFor="spec-gamma-slider" className="text-slate-300 font-medium">
+                  Lookahead Draft Tokens (&gamma; = {specGamma} tokens/step)
+                </label>
+                <span className="font-mono font-semibold text-emerald-400">
+                  &gamma; = {specGamma}
+                </span>
+              </div>
+              <input
+                id="spec-gamma-slider"
+                type="range"
+                min={2}
+                max={10}
+                step={1}
+                value={specGamma}
+                onChange={(e) => setSpecGamma(Number(e.target.value))}
+                className="w-full accent-emerald-400"
+              />
+            </div>
+
+            <div>
+              <div className="flex items-center justify-between text-xs mb-1">
+                <label htmlFor="spec-temp-slider" className="text-slate-300 font-medium">
+                  Sampling Temperature ({specTemp.toFixed(2)})
+                </label>
+                <span className="font-mono font-semibold text-blue-300">
+                  T = {specTemp.toFixed(2)}
+                </span>
+              </div>
+              <input
+                id="spec-temp-slider"
+                type="range"
+                min={0.0}
+                max={1.0}
+                step={0.05}
+                value={specTemp}
+                onChange={(e) => setSpecTemp(Number(e.target.value))}
+                className="w-full accent-blue-400"
+              />
+            </div>
+          </div>
+
+          {/* Right 7 Cols: llama-server --model-draft & vllm serve --speculative-model CLI */}
+          <div className="lg:col-span-7 bg-[#0B0F17] border border-slate-800 rounded-lg p-4 space-y-3">
+            <div className="space-y-1.5">
+              <div className="flex items-center justify-between">
+                <span className="text-xs font-mono font-semibold text-emerald-400">
+                  1. llama.cpp Speculative Server (llama-server -m target -md draft)
+                </span>
+                <button
+                  type="button"
+                  onClick={() => handleCopy(speculativePlan.llamaCppServerCli, 'spec-llamacpp')}
+                  className="inline-flex items-center gap-1 px-2.5 py-1 text-[11px] font-mono text-slate-200 bg-slate-800 hover:bg-slate-700 rounded"
+                >
+                  {copiedKey === 'spec-llamacpp' ? (
+                    <>
+                      <Check className="w-3 h-3 text-emerald-400" />
+                      <span>Copied</span>
+                    </>
+                  ) : (
+                    <>
+                      <Copy className="w-3 h-3" />
+                      <span>Copy llama.cpp CLI</span>
+                    </>
+                  )}
+                </button>
+              </div>
+              <pre className="p-2.5 rounded bg-[#111827] border border-slate-800 text-[11px] font-mono text-slate-200 overflow-x-auto whitespace-pre leading-relaxed">
+                {speculativePlan.llamaCppServerCli}
+              </pre>
+            </div>
+
+            <div className="space-y-1.5">
+              <div className="flex items-center justify-between">
+                <span className="text-xs font-mono font-semibold text-blue-300">
+                  2. vLLM Production Speculative Decoding (--speculative-model)
+                </span>
+                <button
+                  type="button"
+                  onClick={() => handleCopy(speculativePlan.vllmServeCli, 'spec-vllm')}
+                  className="inline-flex items-center gap-1 px-2.5 py-1 text-[11px] font-mono text-slate-200 bg-slate-800 hover:bg-slate-700 rounded"
+                >
+                  {copiedKey === 'spec-vllm' ? (
+                    <>
+                      <Check className="w-3 h-3 text-emerald-400" />
+                      <span>Copied</span>
+                    </>
+                  ) : (
+                    <>
+                      <Copy className="w-3 h-3" />
+                      <span>Copy vLLM CLI</span>
+                    </>
+                  )}
+                </button>
+              </div>
+              <pre className="p-2.5 rounded bg-[#111827] border border-slate-800 text-[11px] font-mono text-slate-200 overflow-x-auto whitespace-pre leading-relaxed">
+                {speculativePlan.vllmServeCli}
+              </pre>
+            </div>
+          </div>
+        </div>
+      </section>
     </div>
   );
 };
+
 

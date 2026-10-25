@@ -54,6 +54,10 @@ import {
   parseAndValidateForgeMlWorkspaceJson,
   solveHardwareAndTimeBudgetConstraints,
   computeSideBySideScriptDiff,
+  mineHardNegativePreferencePairs,
+  computeLayerWiseMixedPrecisionPlan,
+  computeSpeculativeDecodingPairingPlan,
+  SPECULATIVE_MODEL_PAIRINGS,
 } from './pipelineLogic.ts';
 import { CURATED_DATASET_BLENDS } from '../data/curatedDatasetBlends.ts';
 import { ML_GLOSSARY } from './glossaryData.ts';
@@ -1017,6 +1021,9 @@ import {
   computeBox2dIoU,
   computeVisionGrpoIoURewardPlan,
   evaluateVeilVisualSandboxScene,
+  computeVisionTileGridAndSeamSplits,
+  appendBoundingBoxToVisionSample,
+  evaluatePopeVisualHallucinationSuite,
 } from './visionPipelineLogic.ts';
 
 test('INITIAL_VISION_MODELS and CURATED_VISION_BLENDS include 6 multimodal models (including Gemma4 E2B & E4B) and 28 HuggingFace dataset blends including VEIL Privacy Hazard Auditing and Gemma4-VL suites', () => {
@@ -1526,6 +1533,104 @@ test('computeSideBySideScriptDiff highlights exact line changes and categorizes 
   assert.ok(diff.diffRows.some((r) => r.highlightCategory === 'PACKING_MASKING'));
   assert.ok(diff.keyTakeaways.length >= 2);
 });
+
+test('computeVisionTileGridAndSeamSplits and appendBoundingBoxToVisionSample analyze Pan-&-Scan / NaViT tile seams and append live [0, 1000] bounding boxes', () => {
+  const veilSamples = buildVeilPrivacyAuditSeedSamples('GEMMA4_VL_PAN_SCAN');
+  const sample0 = veilSamples[0];
+
+  const noOverlapReport = computeVisionTileGridAndSeamSplits(
+    sample0,
+    'GEMMA4_PAN_SCAN_896',
+    false
+  );
+  assert.equal(noOverlapReport.tilingMode, 'GEMMA4_PAN_SCAN_896');
+  assert.ok(noOverlapReport.tiles.length >= 4);
+  assert.ok(noOverlapReport.seamSplitHazards.length >= 1);
+  assert.equal(
+    noOverlapReport.unmitigatedSeamSplitCount,
+    noOverlapReport.seamSplitHazards.length
+  );
+
+  const overlapReport = computeVisionTileGridAndSeamSplits(
+    sample0,
+    'GEMMA4_PAN_SCAN_896',
+    true
+  );
+  assert.equal(overlapReport.slidingOverlapPct, 12);
+  assert.equal(overlapReport.unmitigatedSeamSplitCount, 0);
+  assert.ok(overlapReport.projectedSmallObjectIoUGainPct > 4.0);
+
+  const updatedSample = appendBoundingBoxToVisionSample(
+    sample0,
+    {
+      label: 'custom_redaction_region',
+      box2d: [220, 310, 580, 740],
+      colorHex: '#83A598',
+      veilAction: 'REDACT',
+    },
+    'GEMMA4_VL_PAN_SCAN'
+  );
+  assert.equal(updatedSample.boundingBoxes.length, sample0.boundingBoxes.length + 1);
+  assert.ok(
+    updatedSample.formattedPayload.includes(
+      '<ref>custom_redaction_region</ref><box>[220, 310, 580, 740]</box>'
+    )
+  );
+});
+
+test('evaluatePopeVisualHallucinationSuite and mineHardNegativePreferencePairs evaluate adversarial visual hallucination probes and mine DPO/ORPO preference pairs', () => {
+  const gemma4Model = INITIAL_VISION_MODELS.find(
+    (m) => m.id === 'google/gemma-4-e4b-vision-it'
+  )!;
+  const popeReport = evaluatePopeVisualHallucinationSuite(gemma4Model);
+  assert.equal(popeReport.modelId, 'google/gemma-4-e4b-vision-it');
+  assert.equal(popeReport.probes.length, 4);
+  assert.ok(popeReport.fineTunedF1ScorePct > popeReport.baseF1ScorePct);
+  assert.ok(popeReport.hallucinationReductionPct > 60);
+
+  const minedVision = mineHardNegativePreferencePairs({
+    modelId: 'google/gemma-4-e4b-vision-it',
+    modelName: 'Gemma-4-E4B-Vision-IT',
+    modality: 'VISION_VLM',
+    alignmentMethod: 'ORPO',
+    customPrompt: '<image>\nIs there a barcode on the blank card?',
+    customChosen: 'No. The card is blank.',
+    customRejected: 'Yes, barcode #99412 is visible.',
+  });
+  assert.equal(minedVision.minedPairs.length, 4);
+  assert.ok(minedVision.projectedHallucinationDropPct > 50);
+  assert.ok(minedVision.combinedJsonlPayload.includes('"chosen"'));
+});
+
+test('computeLayerWiseMixedPrecisionPlan and computeSpeculativeDecodingPairingPlan optimize heterogeneous bit allocation and draft-target decoding speedup', () => {
+  const mixedPlan = computeLayerWiseMixedPrecisionPlan({
+    modelId: 'google/gemma-4-e4b-vision-it',
+    modelName: 'Gemma-4-E4B-Vision-IT',
+    architecture: 'Gemma4',
+    paramsBillions: 4.5,
+    modality: 'VISION_VLM',
+    strategy: 'HETEROGENEOUS_SALIENCE_KQUANT',
+    protectVisionConnector: true,
+  });
+  assert.equal(mixedPlan.layerAllocations.length, 5);
+  assert.equal(mixedPlan.layerAllocations[1].assignedPrecision, 'FP16');
+  assert.ok(mixedPlan.mixedPrecisionPerplexityDelta < mixedPlan.uniformQ4PerplexityDelta);
+  assert.ok(mixedPlan.perplexityRecoveredPct >= 65);
+  assert.ok(mixedPlan.llamaQuantizeHeterogeneousCli.includes('--tensor-type'));
+
+  assert.equal(SPECULATIVE_MODEL_PAIRINGS.length, 6);
+  const specPlan = computeSpeculativeDecodingPairingPlan({
+    pairingId: 'spec-gemma4-vl',
+    lookaheadDraftTokensGamma: 6,
+    domainTemperature: 0.2,
+  });
+  assert.equal(specPlan.pairing.vocabCompatible, true);
+  assert.ok(specPlan.speedupMultiplier >= 1.8);
+  assert.ok(specPlan.projectedSpeculativeTokPerSec > specPlan.baselineTargetTokPerSec);
+  assert.ok(specPlan.llamaCppServerCli.includes('--draft-max 6'));
+  assert.ok(specPlan.vllmServeCli.includes('--speculative-model'));
+});
+
 
 
 
