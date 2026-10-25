@@ -70,6 +70,7 @@ import {
 import { InfoTooltip } from './InfoTooltip';
 import { NextGenQualityAndWebGpuPanel } from './NextGenQualityAndWebGpuPanel';
 import { PythonEngineRunnerCard } from './PythonEngineRunnerCard';
+import { ConstraintSolverAndScriptDiffPanel } from './ConstraintSolverAndScriptDiffPanel';
 
 interface CommandCenterViewProps {
   models: RegisteredModel[];
@@ -2594,6 +2595,30 @@ export const CommandCenterView: React.FC<CommandCenterViewProps> = ({
           </div>
         </section>
       </div>
+
+      {/* Section 07B: Interactive VRAM & Training Time Budget Constraint Solver + Side-by-Side Script Diff Viewer */}
+      <ConstraintSolverAndScriptDiffPanel
+        modelId={selectedModel.id}
+        modelName={selectedModel.name}
+        architecture={selectedModel.architecture}
+        paramsBillions={selectedModel.paramsBillions}
+        contextWindow={selectedModel.contextWindow}
+        activeHpoConfig={activeHpoConfig}
+        samplePackingEnabled={samplePackingEnabled}
+        completionOnlyLossEnabled={completionOnlyLossEnabled}
+        stage2Enabled={stage2Enabled}
+        alignmentMethod={alignmentMethod}
+        alignmentBeta={alignmentBeta}
+        preferenceDataset={preferenceDataset}
+        datasetSources={activeDatasetCommit.sourceDatasets}
+        targetFormat={activeDatasetCommit.targetFormat}
+        currentBundle={executableRunBundle}
+        onApplySolvedConstraints={(solution) => {
+          onUpdateHpoConfig(solution.hpoConfig);
+          setSamplePackingEnabled(solution.samplePackingEnabled);
+          setCompletionOnlyLossEnabled(solution.completionOnlyLossEnabled);
+        }}
+      />
 
       {/* Section 08: Saved Experiment Profiles & Run History Diffing (Run Ledger) */}
       <section className="bg-[#111827] border border-slate-800/90 rounded-lg p-5 space-y-5">

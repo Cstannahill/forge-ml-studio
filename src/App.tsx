@@ -6,8 +6,11 @@ import {
   X,
 } from 'lucide-react';
 import {
+  ACTIVE_WORKSPACE_PROJECT_ID_KEY,
   ArchitectureFamily,
   CommandPaletteActionItem,
+  DEFAULT_WORKSPACE_PROJECTS,
+  EndToEndRecipePreset,
   GpuAlertThresholds,
   GpuTelemetrySnapshot,
   HyperparameterConfig,
@@ -21,6 +24,8 @@ import {
   StandardizedModelCardResult,
   TRAINING_SERIES_STORAGE_KEY,
   TargetFormat,
+  WORKSPACE_PROJECTS_STORAGE_KEY,
+  WorkspaceProjectProfile,
   buildPlainLanguageBenchmarkAnalysis,
   cleanAndRedactSample,
   computeNextHyperparameters,
@@ -70,6 +75,7 @@ import {
   validateVisionDatasetCorpus,
 } from './lib/visionPipelineLogic';
 import { InfoTooltip } from './components/InfoTooltip';
+import { WorkspaceAutopilotAndProjectBar } from './components/WorkspaceAutopilotAndProjectBar';
 
 type ActiveTabId = 'command' | 'datasets' | 'benchmarks' | 'agents' | 'cloud';
 
@@ -222,6 +228,57 @@ export default function App() {
       notes:
         'Initial multimodal VLM corpus with [0, 1000] normalized bounding boxes & NaViT patch budgets',
     },
+  ]);
+
+  // Persistent Workspace Project Profiles & Auto-Save State
+  const [workspaceProjects, setWorkspaceProjects] = useState<WorkspaceProjectProfile[]>(() => {
+    try {
+      const saved = window.localStorage.getItem(WORKSPACE_PROJECTS_STORAGE_KEY);
+      if (saved) {
+        const parsed = JSON.parse(saved);
+        if (Array.isArray(parsed) && parsed.length > 0) {
+          return parsed;
+        }
+      }
+    } catch {
+      // ignore storage errors
+    }
+    return DEFAULT_WORKSPACE_PROJECTS;
+  });
+
+  const [activeProjectId, setActiveProjectId] = useState<string>(() => {
+    try {
+      const savedId = window.localStorage.getItem(ACTIVE_WORKSPACE_PROJECT_ID_KEY);
+      if (savedId) return savedId;
+    } catch {
+      // ignore storage errors
+    }
+    return DEFAULT_WORKSPACE_PROJECTS[0].projectId;
+  });
+
+  const [lastAutoSavedTime, setLastAutoSavedTime] = useState<string>('Just now');
+
+  useEffect(() => {
+    try {
+      window.localStorage.setItem(
+        WORKSPACE_PROJECTS_STORAGE_KEY,
+        JSON.stringify(workspaceProjects)
+      );
+      window.localStorage.setItem(ACTIVE_WORKSPACE_PROJECT_ID_KEY, activeProjectId);
+      const ts = new Date().toTimeString().split(' ')[0];
+      setLastAutoSavedTime(ts);
+    } catch {
+      // ignore storage errors
+    }
+  }, [
+    workspaceProjects,
+    activeProjectId,
+    pipelineTrack,
+    selectedModelId,
+    selectedVisionModelId,
+    activeHpoConfig,
+    targetFormat,
+    visionTargetFormat,
   ]);
 
   // Agentic Orchestrator State
@@ -1359,6 +1416,134 @@ export default function App() {
     }
   };
 
+  // Handlers: Workspace Project Switcher, .forgeml.json Import/Export, Factory Reset & Recipe Autopilot
+  const handleSelectWorkspaceProject = (project: WorkspaceProjectProfile) => {
+    setActiveProjectId(project.projectId);
+    setPipelineTrack(project.pipelineTrack);
+    if (models.some((m) => m.id === project.selectedModelId)) {
+      setSelectedModelId(project.selectedModelId);
+    }
+    if (visionModels.some((vm) => vm.id === project.selectedVisionModelId)) {
+      setSelectedVisionModelId(project.selectedVisionModelId);
+    }
+    setTargetFormat(project.targetFormat);
+    setVisionTargetFormat(project.visionTargetFormat);
+    setActiveHpoConfig(project.hpoConfig);
+    setDoctorSamplePacking(project.samplePackingEnabled);
+    setDoctorCompletionOnlyLoss(project.completionOnlyLossEnabled);
+    setDoctorFreezeVisionTower(project.freezeVisionTower);
+    appendLog(
+      'INFO',
+      'ORCHESTRATOR',
+      `Switched active Workspace Project to "${project.projectName}" (${project.domainTag}).`,
+      `project_id=${project.projectId} | track=${project.pipelineTrack}`
+    );
+  };
+
+  const handleSaveNewWorkspaceProject = (projectName: string, domainTag: string) => {
+    const newProj: WorkspaceProjectProfile = {
+      projectId: `proj-${Date.now()}`,
+      projectName,
+      domainTag,
+      updatedAt: new Date().toISOString().slice(0, 16).replace('T', ' ') + ' UTC',
+      pipelineTrack,
+      selectedModelId,
+      selectedVisionModelId,
+      targetFormat,
+      visionTargetFormat,
+      hpoConfig: { ...activeHpoConfig },
+      samplePackingEnabled: doctorSamplePacking,
+      completionOnlyLossEnabled: doctorCompletionOnlyLoss,
+      freezeVisionTower: doctorFreezeVisionTower,
+    };
+    setWorkspaceProjects((prev) => [newProj, ...prev]);
+    setActiveProjectId(newProj.projectId);
+    appendLog(
+      'INFO',
+      'ORCHESTRATOR',
+      `Saved current workspace state as new profile "${projectName}" (${domainTag}).`,
+      `project_id=${newProj.projectId}`
+    );
+  };
+
+  const handleImportWorkspaceSnapshot = (
+    importedActive: WorkspaceProjectProfile,
+    importedProjects: WorkspaceProjectProfile[]
+  ) => {
+    setWorkspaceProjects(importedProjects);
+    handleSelectWorkspaceProject(importedActive);
+    appendLog(
+      'INFO',
+      'ORCHESTRATOR',
+      `Imported .forgeml.json workspace snapshot ("${importedActive.projectName}", ${importedProjects.length} profile(s)).`,
+      `active_project=${importedActive.projectId}`
+    );
+  };
+
+  const handleResetFactoryDefaults = () => {
+    setWorkspaceProjects(DEFAULT_WORKSPACE_PROJECTS);
+    const def = DEFAULT_WORKSPACE_PROJECTS[0];
+    handleSelectWorkspaceProject(def);
+    setSamples(buildInitialNormalizedSamples('chatml'));
+    setVisionSamples(buildInitialVisionSamples('QWEN_VL_CHATML'));
+    appendLog(
+      'INFO',
+      'ORCHESTRATOR',
+      'Reset workspace profiles, dataset blends, and hyperparameters to Factory Defaults.',
+      'reset=FACTORY_DEFAULTS'
+    );
+  };
+
+  const handleApplyRecipePreset = (preset: EndToEndRecipePreset) => {
+    setPipelineTrack(preset.pipelineTrack);
+    if (preset.pipelineTrack === 'VISION_VLM') {
+      if (visionModels.some((vm) => vm.id === preset.targetModelId)) {
+        setSelectedVisionModelId(preset.targetModelId);
+      }
+      if (preset.visionTargetFormat) {
+        handleChangeVisionTargetFormat(preset.visionTargetFormat);
+      }
+    } else {
+      if (models.some((m) => m.id === preset.targetModelId)) {
+        setSelectedModelId(preset.targetModelId);
+      }
+      handleChangeTargetFormat(preset.targetFormat);
+    }
+    setActiveHpoConfig({ ...preset.hpoConfig });
+    setDoctorSamplePacking(preset.samplePackingEnabled);
+    setDoctorCompletionOnlyLoss(preset.completionOnlyLossEnabled);
+
+    setWorkspaceProjects((prev) =>
+      prev.map((p) =>
+        p.projectId === activeProjectId
+          ? {
+              ...p,
+              pipelineTrack: preset.pipelineTrack,
+              selectedModelId:
+                preset.pipelineTrack === 'TEXT_LLM' ? preset.targetModelId : p.selectedModelId,
+              selectedVisionModelId:
+                preset.pipelineTrack === 'VISION_VLM'
+                  ? preset.targetModelId
+                  : p.selectedVisionModelId,
+              targetFormat: preset.targetFormat,
+              visionTargetFormat: preset.visionTargetFormat ?? p.visionTargetFormat,
+              hpoConfig: { ...preset.hpoConfig },
+              samplePackingEnabled: preset.samplePackingEnabled,
+              completionOnlyLossEnabled: preset.completionOnlyLossEnabled,
+              activeRecipeId: preset.id,
+            }
+          : p
+      )
+    );
+
+    appendLog(
+      'INFO',
+      'ORCHESTRATOR',
+      `[RECIPE_AUTOPILOT] Applied End-to-End Recipe "${preset.title}" -> Track: ${preset.pipelineTrack}, Model: ${preset.targetModelId}, Blend: "${preset.recommendedBlendTitle}", DoRA r=${preset.hpoConfig.loraRank}, Stage 2: ${preset.stage2AlignmentMethod}, Export: ${preset.quantizationExportTarget}.`,
+      `recipe=${preset.id} | vram_est=${preset.estimatedVramGb}GB | time_est=${preset.estimatedRuntimeMinutes}m`
+    );
+  };
+
   return (
     <div
       className="min-h-screen text-[#FFE9B1] flex flex-col transition-colors"
@@ -1471,6 +1656,28 @@ export default function App() {
 
       {/* Main Content Container */}
       <main className="flex-1 max-w-[1400px] w-full mx-auto px-4 sm:px-6 py-8 space-y-6">
+        {/* Top Workspace Project Switcher (.forgeml.json) & One-Click End-to-End Recipe Autopilot Bar */}
+        <WorkspaceAutopilotAndProjectBar
+          projects={workspaceProjects}
+          activeProjectId={activeProjectId}
+          onSelectProject={handleSelectWorkspaceProject}
+          onSaveNewProject={handleSaveNewWorkspaceProject}
+          onImportWorkspaceSnapshot={handleImportWorkspaceSnapshot}
+          onResetFactoryDefaults={handleResetFactoryDefaults}
+          onApplyRecipePreset={handleApplyRecipePreset}
+          currentState={{
+            pipelineTrack,
+            selectedModelId,
+            selectedVisionModelId,
+            targetFormat,
+            visionTargetFormat,
+            hpoConfig: activeHpoConfig,
+            samplePackingEnabled: doctorSamplePacking,
+            completionOnlyLossEnabled: doctorCompletionOnlyLoss,
+          }}
+          lastAutoSavedTime={lastAutoSavedTime}
+        />
+
         {/* Isolated Pipeline Modality Track Switcher (Pure Text LLM vs. Isolated Vision-Language VLM) */}
         <div className="bg-[#22211F] border border-[#4A453E] rounded-xl p-4 flex flex-col lg:flex-row lg:items-center justify-between gap-4">
           <div className="space-y-0.5">

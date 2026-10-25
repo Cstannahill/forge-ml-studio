@@ -5139,3 +5139,888 @@ export function parseEngineMetricLine(line: string): {
   }
   return null;
 }
+
+// ============================================================================
+// 29. ONE-CLICK END-TO-END RECIPE PRESETS (GOAL-DRIVEN AUTOPILOT)
+// ============================================================================
+
+export type EndToEndRecipePresetId =
+  | 'recipe-ultra-edge-450m-privacy'
+  | 'recipe-gemma4-e4b-doc-table-ocr'
+  | 'recipe-qwen35-2b-json-tool-agent'
+  | 'recipe-coding-sql-specialist'
+  | 'recipe-lfm25-12b-long-rag'
+  | 'recipe-gemma4-e2b-mmmlu-stem';
+
+export interface EndToEndRecipePreset {
+  id: EndToEndRecipePresetId;
+  title: string;
+  shortBadge: string;
+  goalDescription: string;
+  pipelineTrack: 'TEXT_LLM' | 'VISION_VLM';
+  targetModelId: string;
+  targetModelName: string;
+  recommendedBlendId: string;
+  recommendedBlendTitle: string;
+  targetFormat: TargetFormat;
+  visionTargetFormat?:
+    | 'QWEN_VL_CHATML'
+    | 'LFM_VL_NATIVE'
+    | 'GEMMA4_VL_PAN_SCAN'
+    | 'LLAVA_CONVERSATION';
+  hpoConfig: HyperparameterConfig;
+  useDora: boolean;
+  samplePackingEnabled: boolean;
+  completionOnlyLossEnabled: boolean;
+  stage2AlignmentMethod: PreferenceAlignmentMethod;
+  stage3Verifiers: string[];
+  quantizationExportTarget: string;
+  estimatedVramGb: number;
+  estimatedRuntimeMinutes: number;
+}
+
+export const END_TO_END_RECIPE_PRESETS: EndToEndRecipePreset[] = [
+  {
+    id: 'recipe-ultra-edge-450m-privacy',
+    title: 'Ultra-Edge 450M Privacy Redactor (<500MB RAM)',
+    shortBadge: '450M VLM · VEIL Privacy',
+    goalDescription:
+      'Configures LFM2.5-VL-450M for real-time on-device PII/face/license-plate redaction with [0, 1000] bounding-box grounding and sub-350MB GGUF export.',
+    pipelineTrack: 'VISION_VLM',
+    targetModelId: 'LiquidAI/LFM2.5-VL-450M-Instruct',
+    targetModelName: 'LFM2.5-VL-450M-Instruct (Ultra-Edge Vision)',
+    recommendedBlendId: 'vlm-blend-veil-5cat-redaction-core',
+    recommendedBlendTitle: 'VEIL 5-Category Privacy Hazard Redaction Core',
+    targetFormat: 'chatml',
+    visionTargetFormat: 'LFM_VL_NATIVE',
+    hpoConfig: {
+      learningRate: 0.00025,
+      loraRank: 16,
+      loraAlpha: 32,
+      loraDropout: 0.05,
+      warmupRatio: 0.05,
+      weightDecay: 0.01,
+      neftuneAlpha: 5,
+      batchSize: 8,
+      lrScheduler: 'wsd',
+    },
+    useDora: true,
+    samplePackingEnabled: true,
+    completionOnlyLossEnabled: true,
+    stage2AlignmentMethod: 'ORPO',
+    stage3Verifiers: ['bbox_giou_reward', 'veil_hazard_completeness'],
+    quantizationExportTarget: 'GGUF-Q4_K_M + mmproj-f16.gguf (310 MB)',
+    estimatedVramGb: 2.1,
+    estimatedRuntimeMinutes: 14,
+  },
+  {
+    id: 'recipe-gemma4-e4b-doc-table-ocr',
+    title: 'Gemma4-E4B High-Res Document & Table Extractor',
+    shortBadge: 'Gemma4-E4B · DocVQA 93.8%',
+    goalDescription:
+      'Configures Gemma4-E4B-Vision-IT with Pan-&-Scan adaptive 896x896 tiling for dense multi-page PDFs, financial tables, and structured JSON receipts.',
+    pipelineTrack: 'VISION_VLM',
+    targetModelId: 'google/gemma-4-e4b-vision-it',
+    targetModelName: 'Gemma4-E4B-Vision-IT (Multimodal Pan-&-Scan 4B)',
+    recommendedBlendId: 'vlm-blend-gemma4-pan-scan-docvqa',
+    recommendedBlendTitle: 'Gemma4 Pan-&-Scan High-Res DocVQA & Financial Tables',
+    targetFormat: 'chatml',
+    visionTargetFormat: 'GEMMA4_VL_PAN_SCAN',
+    hpoConfig: {
+      learningRate: 0.00015,
+      loraRank: 32,
+      loraAlpha: 64,
+      loraDropout: 0.05,
+      warmupRatio: 0.06,
+      weightDecay: 0.01,
+      neftuneAlpha: 5,
+      batchSize: 4,
+      lrScheduler: 'wsd',
+    },
+    useDora: true,
+    samplePackingEnabled: true,
+    completionOnlyLossEnabled: true,
+    stage2AlignmentMethod: 'ORPO',
+    stage3Verifiers: ['json_schema', 'bbox_giou_reward'],
+    quantizationExportTarget: 'GGUF-Q4_K_M + mmproj-f16.gguf (2.8 GB)',
+    estimatedVramGb: 6.4,
+    estimatedRuntimeMinutes: 32,
+  },
+  {
+    id: 'recipe-qwen35-2b-json-tool-agent',
+    title: 'Qwen3.5-2B Strict JSON & Tool-Calling Agent',
+    shortBadge: 'Qwen3.5-2B · Tool Router',
+    goalDescription:
+      'Tunes Qwen3.5-2B-Instruct for zero-hallucination OpenAI function calling, strict JSON Schema compliance, and multi-step <think> tool routing.',
+    pipelineTrack: 'TEXT_LLM',
+    targetModelId: 'Qwen/Qwen3.5-2B-Instruct',
+    targetModelName: 'Qwen3.5-2B-Instruct',
+    recommendedBlendId: 'blend-02-function-calling-json',
+    recommendedBlendTitle: 'Strict JSON Schema & Function-Calling Agent Blend',
+    targetFormat: 'chatml',
+    hpoConfig: {
+      learningRate: 0.0002,
+      loraRank: 32,
+      loraAlpha: 64,
+      loraDropout: 0.05,
+      warmupRatio: 0.05,
+      weightDecay: 0.01,
+      neftuneAlpha: 5,
+      batchSize: 8,
+      lrScheduler: 'wsd',
+    },
+    useDora: true,
+    samplePackingEnabled: true,
+    completionOnlyLossEnabled: true,
+    stage2AlignmentMethod: 'ORPO',
+    stage3Verifiers: ['json_schema', 'think_format_length'],
+    quantizationExportTarget: 'GGUF-Q4_K_M (1.28 GB · imatrix calibrated)',
+    estimatedVramGb: 4.2,
+    estimatedRuntimeMinutes: 22,
+  },
+  {
+    id: 'recipe-coding-sql-specialist',
+    title: 'Coding & SQL Specialist (Sub-2B Polyglot)',
+    shortBadge: 'HumanEval+ · Text-to-SQL',
+    goalDescription:
+      'High-rank DoRA (r=64) + Stage 3 Pytest/SQLite AST RLVR verifiers for Python, TypeScript, and complex multi-join SQL query synthesis.',
+    pipelineTrack: 'TEXT_LLM',
+    targetModelId: 'Qwen/Qwen3.5-2B-Instruct',
+    targetModelName: 'Qwen3.5-2B-Instruct',
+    recommendedBlendId: 'blend-01-python-ts-code',
+    recommendedBlendTitle: 'Polyglot Code Generation & Text-to-SQL Specialist',
+    targetFormat: 'chatml',
+    hpoConfig: {
+      learningRate: 0.00018,
+      loraRank: 64,
+      loraAlpha: 128,
+      loraDropout: 0.05,
+      warmupRatio: 0.05,
+      weightDecay: 0.01,
+      neftuneAlpha: 5,
+      batchSize: 4,
+      lrScheduler: 'wsd',
+    },
+    useDora: true,
+    samplePackingEnabled: true,
+    completionOnlyLossEnabled: true,
+    stage2AlignmentMethod: 'SimPO',
+    stage3Verifiers: ['python_pytest', 'json_schema'],
+    quantizationExportTarget: 'SAFETENSORS (BF16 Merged · 4.0 GB)',
+    estimatedVramGb: 5.1,
+    estimatedRuntimeMinutes: 28,
+  },
+  {
+    id: 'recipe-lfm25-12b-long-rag',
+    title: 'LFM2.5-1.2B Citation-Grounded Long-Context RAG',
+    shortBadge: 'LFM2.5-1.2B · 32K RAG',
+    goalDescription:
+      'Leverages Liquid state-space hybrid memory efficiency for 32K context needle-in-a-haystack synthesis with strict inline [Doc-N] citation faithfulness.',
+    pipelineTrack: 'TEXT_LLM',
+    targetModelId: 'LiquidAI/LFM2.5-1.2B-Instruct',
+    targetModelName: 'LFM2.5-1.2B-Instruct (Liquid Edge)',
+    recommendedBlendId: 'blend-04-rag-faithfulness',
+    recommendedBlendTitle: 'Citation-Grounded RAG & Hallucination Suppression',
+    targetFormat: 'chatml',
+    hpoConfig: {
+      learningRate: 0.00022,
+      loraRank: 16,
+      loraAlpha: 32,
+      loraDropout: 0.05,
+      warmupRatio: 0.04,
+      weightDecay: 0.01,
+      neftuneAlpha: 5,
+      batchSize: 8,
+      lrScheduler: 'wsd',
+    },
+    useDora: true,
+    samplePackingEnabled: true,
+    completionOnlyLossEnabled: true,
+    stage2AlignmentMethod: 'ORPO',
+    stage3Verifiers: ['json_schema', 'think_format_length'],
+    quantizationExportTarget: 'GGUF-Q4_K_M (760 MB · Constant KV Memory)',
+    estimatedVramGb: 2.9,
+    estimatedRuntimeMinutes: 18,
+  },
+  {
+    id: 'recipe-gemma4-e2b-mmmlu-stem',
+    title: 'Gemma4-E2B Multilingual & Multimodal M-MMLU Tutor',
+    shortBadge: 'Gemma4-E2B · M-MMLU + STEM',
+    goalDescription:
+      'Cross-lingual Pan-&-Scan visual reasoning across 40+ languages, scientific diagrams (MMMU), and MathVista geometry proofs.',
+    pipelineTrack: 'VISION_VLM',
+    targetModelId: 'google/gemma-4-e2b-vision-it',
+    targetModelName: 'Gemma4-E2B-Vision-IT (Multimodal Pan-&-Scan)',
+    recommendedBlendId: 'vlm-blend-gemma4-multilingual-mmmlu',
+    recommendedBlendTitle: 'Gemma4 Multilingual M-MMLU & Visual Cultural Grounding',
+    targetFormat: 'chatml',
+    visionTargetFormat: 'GEMMA4_VL_PAN_SCAN',
+    hpoConfig: {
+      learningRate: 0.00018,
+      loraRank: 32,
+      loraAlpha: 64,
+      loraDropout: 0.05,
+      warmupRatio: 0.05,
+      weightDecay: 0.01,
+      neftuneAlpha: 5,
+      batchSize: 4,
+      lrScheduler: 'wsd',
+    },
+    useDora: true,
+    samplePackingEnabled: true,
+    completionOnlyLossEnabled: true,
+    stage2AlignmentMethod: 'ORPO',
+    stage3Verifiers: ['math_symbolic', 'json_schema'],
+    quantizationExportTarget: 'GGUF-Q4_K_M + mmproj-f16.gguf (1.75 GB)',
+    estimatedVramGb: 4.3,
+    estimatedRuntimeMinutes: 24,
+  },
+];
+
+export interface RecipePresetDiffItem {
+  field: string;
+  currentValue: string;
+  nextValue: string;
+  changed: boolean;
+}
+
+export interface RecipePresetDiffPreview {
+  preset: EndToEndRecipePreset;
+  changedCount: number;
+  diffs: RecipePresetDiffItem[];
+}
+
+export function computeRecipePresetDiffPreview(
+  currentState: {
+    pipelineTrack: 'TEXT_LLM' | 'VISION_VLM';
+    selectedModelId: string;
+    selectedVisionModelId: string;
+    targetFormat: TargetFormat;
+    visionTargetFormat: string;
+    hpoConfig: HyperparameterConfig;
+    samplePackingEnabled: boolean;
+    completionOnlyLossEnabled: boolean;
+  },
+  preset: EndToEndRecipePreset
+): RecipePresetDiffPreview {
+  const activeCurrentModel =
+    currentState.pipelineTrack === 'VISION_VLM'
+      ? currentState.selectedVisionModelId
+      : currentState.selectedModelId;
+
+  const rawDiffs: Array<{ field: string; currentValue: string; nextValue: string }> = [
+    {
+      field: 'Modality Track',
+      currentValue: currentState.pipelineTrack,
+      nextValue: preset.pipelineTrack,
+    },
+    {
+      field: 'Target Base Model',
+      currentValue: activeCurrentModel,
+      nextValue: preset.targetModelId,
+    },
+    {
+      field: 'Curated Dataset Blend',
+      currentValue: 'Active Workspace Corpus',
+      nextValue: preset.recommendedBlendTitle,
+    },
+    {
+      field: 'Serialization Schema',
+      currentValue:
+        currentState.pipelineTrack === 'VISION_VLM'
+          ? currentState.visionTargetFormat
+          : currentState.targetFormat.toUpperCase(),
+      nextValue:
+        preset.pipelineTrack === 'VISION_VLM'
+          ? preset.visionTargetFormat ?? 'GEMMA4_VL_PAN_SCAN'
+          : preset.targetFormat.toUpperCase(),
+    },
+    {
+      field: 'DoRA / LoRA Rank & Alpha',
+      currentValue: `r=${currentState.hpoConfig.loraRank}, α=${currentState.hpoConfig.loraAlpha}`,
+      nextValue: `r=${preset.hpoConfig.loraRank}, α=${preset.hpoConfig.loraAlpha} (DoRA=${preset.useDora ? 'ON' : 'OFF'})`,
+    },
+    {
+      field: 'Learning Rate & Schedule',
+      currentValue: `${currentState.hpoConfig.learningRate} (${currentState.hpoConfig.lrScheduler.toUpperCase()})`,
+      nextValue: `${preset.hpoConfig.learningRate} (${preset.hpoConfig.lrScheduler.toUpperCase()})`,
+    },
+    {
+      field: 'Multipack & Prompt Masking',
+      currentValue: `Pack=${currentState.samplePackingEnabled ? 'ON' : 'OFF'} · Mask=${currentState.completionOnlyLossEnabled ? 'ON' : 'OFF'}`,
+      nextValue: `Pack=${preset.samplePackingEnabled ? 'ON' : 'OFF'} · Mask=${preset.completionOnlyLossEnabled ? 'ON' : 'OFF'}`,
+    },
+    {
+      field: 'Stage 2 & 3 Alignment / RLVR',
+      currentValue: 'ORPO + Active Verifiers',
+      nextValue: `${preset.stage2AlignmentMethod} + [${preset.stage3Verifiers.join(', ')}]`,
+    },
+    {
+      field: 'Quantization & Export Target',
+      currentValue: 'SAFETENSORS / GGUF',
+      nextValue: preset.quantizationExportTarget,
+    },
+  ];
+
+  const diffs: RecipePresetDiffItem[] = rawDiffs.map((d) => ({
+    ...d,
+    changed: d.currentValue !== d.nextValue,
+  }));
+
+  return {
+    preset,
+    changedCount: diffs.filter((d) => d.changed).length,
+    diffs,
+  };
+}
+
+// ============================================================================
+// 30. PERSISTENT WORKSPACE PROFILES & FULL PROJECT .forgeml.json IMPORT/EXPORT
+// ============================================================================
+
+export const WORKSPACE_PROJECTS_STORAGE_KEY = 'forgeml_workspace_projects_v1';
+export const ACTIVE_WORKSPACE_PROJECT_ID_KEY = 'forgeml_active_project_id_v1';
+
+export interface WorkspaceProjectProfile {
+  projectId: string;
+  projectName: string;
+  domainTag: string;
+  updatedAt: string;
+  pipelineTrack: 'TEXT_LLM' | 'VISION_VLM';
+  selectedModelId: string;
+  selectedVisionModelId: string;
+  targetFormat: TargetFormat;
+  visionTargetFormat:
+    | 'QWEN_VL_CHATML'
+    | 'LFM_VL_NATIVE'
+    | 'GEMMA4_VL_PAN_SCAN'
+    | 'LLAVA_CONVERSATION';
+  hpoConfig: HyperparameterConfig;
+  samplePackingEnabled: boolean;
+  completionOnlyLossEnabled: boolean;
+  freezeVisionTower: boolean;
+  activeRecipeId?: EndToEndRecipePresetId;
+}
+
+export const DEFAULT_WORKSPACE_PROJECTS: WorkspaceProjectProfile[] = [
+  {
+    projectId: 'proj-code-reasoning-llm',
+    projectName: 'Project A: Sub-2B Code & Tool-Calling Agent',
+    domainTag: 'TEXT_LLM · Coding & JSON',
+    updatedAt: '2026-10-25 00:15 UTC',
+    pipelineTrack: 'TEXT_LLM',
+    selectedModelId: 'Qwen/Qwen3.5-2B-Instruct',
+    selectedVisionModelId: 'LiquidAI/LFM2.5-VL-450M-Instruct',
+    targetFormat: 'chatml',
+    visionTargetFormat: 'QWEN_VL_CHATML',
+    hpoConfig: {
+      learningRate: 0.0002,
+      loraRank: 32,
+      loraAlpha: 64,
+      loraDropout: 0.05,
+      warmupRatio: 0.05,
+      weightDecay: 0.01,
+      neftuneAlpha: 5,
+      batchSize: 8,
+      lrScheduler: 'wsd',
+    },
+    samplePackingEnabled: true,
+    completionOnlyLossEnabled: true,
+    freezeVisionTower: true,
+    activeRecipeId: 'recipe-qwen35-2b-json-tool-agent',
+  },
+  {
+    projectId: 'proj-veil-privacy-auditor',
+    projectName: 'Project B: VEIL 450M Edge Privacy Redactor',
+    domainTag: 'VISION_VLM · VEIL Redaction',
+    updatedAt: '2026-10-25 00:20 UTC',
+    pipelineTrack: 'VISION_VLM',
+    selectedModelId: 'LiquidAI/LFM2.5-1.2B-Instruct',
+    selectedVisionModelId: 'LiquidAI/LFM2.5-VL-450M-Instruct',
+    targetFormat: 'chatml',
+    visionTargetFormat: 'LFM_VL_NATIVE',
+    hpoConfig: {
+      learningRate: 0.00025,
+      loraRank: 16,
+      loraAlpha: 32,
+      loraDropout: 0.05,
+      warmupRatio: 0.05,
+      weightDecay: 0.01,
+      neftuneAlpha: 5,
+      batchSize: 8,
+      lrScheduler: 'wsd',
+    },
+    samplePackingEnabled: true,
+    completionOnlyLossEnabled: true,
+    freezeVisionTower: true,
+    activeRecipeId: 'recipe-ultra-edge-450m-privacy',
+  },
+  {
+    projectId: 'proj-gemma4-docvqa-ocr',
+    projectName: 'Project C: Gemma4-E4B Pan-&-Scan Medical & DocVQA',
+    domainTag: 'VISION_VLM · Gemma4 DocVQA',
+    updatedAt: '2026-10-25 00:25 UTC',
+    pipelineTrack: 'VISION_VLM',
+    selectedModelId: 'google/gemma-4-e2b-it',
+    selectedVisionModelId: 'google/gemma-4-e4b-vision-it',
+    targetFormat: 'chatml',
+    visionTargetFormat: 'GEMMA4_VL_PAN_SCAN',
+    hpoConfig: {
+      learningRate: 0.00015,
+      loraRank: 32,
+      loraAlpha: 64,
+      loraDropout: 0.05,
+      warmupRatio: 0.06,
+      weightDecay: 0.01,
+      neftuneAlpha: 5,
+      batchSize: 4,
+      lrScheduler: 'wsd',
+    },
+    samplePackingEnabled: true,
+    completionOnlyLossEnabled: true,
+    freezeVisionTower: true,
+    activeRecipeId: 'recipe-gemma4-e4b-doc-table-ocr',
+  },
+];
+
+export interface ForgeMlProjectSnapshotFile {
+  schemaVersion: 'forgeml-workspace-v1.0';
+  exportedAt: string;
+  activeProjectId: string;
+  activeProject: WorkspaceProjectProfile;
+  projects: WorkspaceProjectProfile[];
+}
+
+export function exportForgeMlWorkspaceJson(
+  activeProject: WorkspaceProjectProfile,
+  allProjects: WorkspaceProjectProfile[]
+): string {
+  const payload: ForgeMlProjectSnapshotFile = {
+    schemaVersion: 'forgeml-workspace-v1.0',
+    exportedAt: new Date().toISOString(),
+    activeProjectId: activeProject.projectId,
+    activeProject,
+    projects: allProjects.length > 0 ? allProjects : [activeProject],
+  };
+  return JSON.stringify(payload, null, 2);
+}
+
+export function parseAndValidateForgeMlWorkspaceJson(rawJson: string): {
+  valid: boolean;
+  error?: string;
+  snapshot?: ForgeMlProjectSnapshotFile;
+} {
+  if (!rawJson || !rawJson.trim()) {
+    return { valid: false, error: 'Snapshot JSON payload is empty.' };
+  }
+  try {
+    const parsed = JSON.parse(rawJson) as Partial<ForgeMlProjectSnapshotFile>;
+    if (parsed.schemaVersion !== 'forgeml-workspace-v1.0') {
+      return {
+        valid: false,
+        error: 'Invalid or unsupported schemaVersion (expected "forgeml-workspace-v1.0").',
+      };
+    }
+    if (
+      !parsed.activeProject ||
+      typeof parsed.activeProject.projectId !== 'string' ||
+      typeof parsed.activeProject.projectName !== 'string' ||
+      !parsed.activeProject.hpoConfig ||
+      typeof parsed.activeProject.hpoConfig.loraRank !== 'number'
+    ) {
+      return {
+        valid: false,
+        error: 'Missing required activeProject or hpoConfig fields in .forgeml.json.',
+      };
+    }
+    const projects =
+      Array.isArray(parsed.projects) && parsed.projects.length > 0
+        ? parsed.projects
+        : [parsed.activeProject];
+
+    return {
+      valid: true,
+      snapshot: {
+        schemaVersion: 'forgeml-workspace-v1.0',
+        exportedAt: parsed.exportedAt || new Date().toISOString(),
+        activeProjectId: parsed.activeProjectId || parsed.activeProject.projectId,
+        activeProject: parsed.activeProject,
+        projects,
+      },
+    };
+  } catch (err) {
+    return {
+      valid: false,
+      error: `Malformed JSON syntax: ${err instanceof Error ? err.message : 'parse error'}`,
+    };
+  }
+}
+
+// ============================================================================
+// 31. INTERACTIVE VRAM & TRAINING TIME BUDGET CONSTRAINT SOLVER ("REVERSE CALCULATOR")
+// ============================================================================
+
+export type ConstraintSolverQualityTarget =
+  | 'MAX_ACCURACY'
+  | 'BALANCED'
+  | 'FASTEST_PROTOTYPE';
+
+export interface HardwareBudgetConstraintInput {
+  maxVramGb: number;
+  maxMinutes: number;
+  targetQuality: ConstraintSolverQualityTarget;
+  paramsBillions: number;
+  architecture: ArchitectureFamily;
+  datasetSampleCount: number;
+}
+
+export interface HardwareBudgetConstraintSolution {
+  feasible: boolean;
+  feasibilityStatus:
+    | 'OPTIMAL_FIT'
+    | 'TIGHT_FIT_WITH_LISA'
+    | 'REQUIRES_SMALLER_MODEL_OR_CLOUD';
+  quantization: QuantizationMode;
+  loraRank: number;
+  loraAlpha: number;
+  batchSize: number;
+  gradientAccumulationSteps: number;
+  seqLen: number;
+  samplePackingEnabled: boolean;
+  completionOnlyLossEnabled: boolean;
+  enableLisaLayerSampling: boolean;
+  lisaActiveLayers: 2 | 4 | 6;
+  gradientCheckpointing: boolean;
+  solvedHpoConfig: HyperparameterConfig;
+  estimatedPeakVramGb: number;
+  vramHeadroomGb: number;
+  estimatedTrainingMinutes: number;
+  solverRationale: string[];
+}
+
+export function solveHardwareAndTimeBudgetConstraints(
+  input: HardwareBudgetConstraintInput
+): HardwareBudgetConstraintSolution {
+  const safeVramBudget = Math.max(2, input.maxVramGb);
+  const safeMinutesBudget = Math.max(5, input.maxMinutes);
+  const sampleCount = Math.max(500, input.datasetSampleCount);
+  const rationale: string[] = [];
+
+  // 1. Choose quantization precision based on VRAM vs parameter count
+  let quantization: QuantizationMode = 'qlora-4bit';
+  if (safeVramBudget >= input.paramsBillions * 4.5 && input.targetQuality === 'MAX_ACCURACY') {
+    quantization = 'lora-16bit';
+    rationale.push(
+      `VRAM budget (${safeVramBudget} GB) easily accommodates 16-bit LoRA (BF16) for ${input.paramsBillions}B parameters without NF4 dequantization overhead.`
+    );
+  } else if (safeVramBudget >= input.paramsBillions * 2.8 && input.targetQuality !== 'FASTEST_PROTOTYPE') {
+    quantization = 'lora-8bit';
+    rationale.push(
+      `Selected 8-Bit Int8 LoRA to balance ${safeVramBudget} GB VRAM headroom with high weight fidelity.`
+    );
+  } else {
+    quantization = 'qlora-4bit';
+    rationale.push(
+      `Selected 4-Bit NF4 QLoRA double-quantization to minimize base weight memory on ${safeVramBudget} GB hardware.`
+    );
+  }
+
+  // 2. Choose sequence length and micro-batch size to fit within 88% of maxVramGb
+  const candidateSeqLens =
+    input.targetQuality === 'MAX_ACCURACY'
+      ? [8192, 4096, 2048]
+      : input.targetQuality === 'BALANCED'
+      ? [4096, 2048]
+      : [2048, 1024];
+  const candidateBatches = [8, 4, 2, 1];
+
+  let chosenSeqLen = 2048;
+  let chosenBatch = 1;
+  let bestVramEst = estimateVramRequirements({
+    paramsBillions: input.paramsBillions,
+    quantization,
+    contextLength: chosenSeqLen,
+    batchSize: chosenBatch,
+    gradientCheckpointing: true,
+    architecture: input.architecture,
+  });
+
+  let foundFit = false;
+  for (const seq of candidateSeqLens) {
+    for (const b of candidateBatches) {
+      const est = estimateVramRequirements({
+        paramsBillions: input.paramsBillions,
+        quantization,
+        contextLength: seq,
+        batchSize: b,
+        gradientCheckpointing: true,
+        architecture: input.architecture,
+      });
+      if (est.totalRequiredGb <= safeVramBudget * 0.9) {
+        chosenSeqLen = seq;
+        chosenBatch = b;
+        bestVramEst = est;
+        foundFit = true;
+        break;
+      }
+    }
+    if (foundFit) break;
+  }
+
+  // 3. Check if LISA dynamic layer sampling is needed to squeeze into tight VRAM or tight time budget
+  let enableLisaLayerSampling = false;
+  let lisaActiveLayers: 2 | 4 | 6 = 4;
+  let estimatedPeakVramGb = bestVramEst.totalRequiredGb;
+
+  if (!foundFit && estimatedPeakVramGb * 0.78 <= safeVramBudget) {
+    enableLisaLayerSampling = true;
+    lisaActiveLayers = 2;
+    estimatedPeakVramGb = Number((estimatedPeakVramGb * 0.78).toFixed(2));
+    foundFit = true;
+    rationale.push(
+      `Activated LISA Dynamic Layer Sampling (k=2 active middle layers) to cut activation/optimizer VRAM by 22% down to ${estimatedPeakVramGb} GB.`
+    );
+  } else if (input.targetQuality === 'FASTEST_PROTOTYPE' || safeMinutesBudget <= 25) {
+    enableLisaLayerSampling = true;
+    lisaActiveLayers = 4;
+    estimatedPeakVramGb = Number((estimatedPeakVramGb * 0.86).toFixed(2));
+    rationale.push(
+      `Enabled LISA Layer Sampling (k=4) to accelerate backward pass and meet the ${safeMinutesBudget}-minute wall-clock target.`
+    );
+  }
+
+  // 4. Choose LoRA rank based on targetQuality and time budget
+  let loraRank = 32;
+  if (input.targetQuality === 'MAX_ACCURACY' && safeVramBudget >= 12 && safeMinutesBudget >= 30) {
+    loraRank = 64;
+  } else if (input.targetQuality === 'FASTEST_PROTOTYPE' || safeMinutesBudget < 20 || safeVramBudget <= 6) {
+    loraRank = 16;
+  }
+  const loraAlpha = loraRank * 2;
+  rationale.push(
+    `Assigned DoRA/LoRA rank r=${loraRank} (α=${loraAlpha}) with FlashAttention Multipack + Completion-Only Masking (-100) for 2.1x throughput.`
+  );
+
+  // 5. Estimate training duration in minutes and adjust epochs/packing if needed
+  const samplePackingEnabled = true;
+  const completionOnlyLossEnabled = true;
+  const speedMultiplier =
+    (samplePackingEnabled ? 2.05 : 1.0) *
+    (enableLisaLayerSampling ? 1.25 : 1.0) *
+    (quantization === 'qlora-4bit' ? 1.0 : 1.15);
+
+  const rawMinutes =
+    ((sampleCount / 1000) * Math.max(0.5, input.paramsBillions) * 1.65) / speedMultiplier;
+  const estimatedTrainingMinutes = Math.max(
+    4,
+    Math.min(safeMinutesBudget, Math.round(rawMinutes))
+  );
+
+  if (rawMinutes > safeMinutesBudget) {
+    rationale.push(
+      `Capped max_steps and enabled WSD fast decay phase so run completes within ${estimatedTrainingMinutes} mins (budget: ${safeMinutesBudget} mins).`
+    );
+  } else {
+    rationale.push(
+      `Projected wall-clock runtime is ${estimatedTrainingMinutes} mins, well inside your ${safeMinutesBudget}-minute budget.`
+    );
+  }
+
+  const gradientAccumulationSteps = Math.max(1, Math.round(16 / chosenBatch));
+  const vramHeadroomGb = Number((safeVramBudget - estimatedPeakVramGb).toFixed(2));
+  const feasible = estimatedPeakVramGb <= safeVramBudget;
+
+  const feasibilityStatus: HardwareBudgetConstraintSolution['feasibilityStatus'] = !feasible
+    ? 'REQUIRES_SMALLER_MODEL_OR_CLOUD'
+    : enableLisaLayerSampling || vramHeadroomGb < 1.5
+    ? 'TIGHT_FIT_WITH_LISA'
+    : 'OPTIMAL_FIT';
+
+  const solvedHpoConfig: HyperparameterConfig = {
+    learningRate:
+      input.paramsBillions <= 1.0
+        ? 0.00025
+        : input.paramsBillions <= 2.5
+        ? 0.0002
+        : 0.00015,
+    loraRank,
+    loraAlpha,
+    loraDropout: 0.05,
+    warmupRatio: 0.05,
+    weightDecay: 0.01,
+    neftuneAlpha: 5,
+    batchSize: chosenBatch,
+    lrScheduler: 'wsd',
+  };
+
+  return {
+    feasible,
+    feasibilityStatus,
+    quantization,
+    loraRank,
+    loraAlpha,
+    batchSize: chosenBatch,
+    gradientAccumulationSteps,
+    seqLen: chosenSeqLen,
+    samplePackingEnabled,
+    completionOnlyLossEnabled,
+    enableLisaLayerSampling,
+    lisaActiveLayers,
+    gradientCheckpointing: true,
+    solvedHpoConfig,
+    estimatedPeakVramGb,
+    vramHeadroomGb,
+    estimatedTrainingMinutes,
+    solverRationale: rationale,
+  };
+}
+
+// ============================================================================
+// 32. SIDE-BY-SIDE DIFF VIEWER FOR GENERATED TRAINING SCRIPTS (UNSLOTH / AXOLOTL / TRL)
+// ============================================================================
+
+export interface ScriptDiffLine {
+  lineNumberLeft: number | null;
+  lineNumberRight: number | null;
+  leftText: string;
+  rightText: string;
+  status: 'UNCHANGED' | 'MODIFIED' | 'ADDED' | 'REMOVED';
+  highlightCategory?:
+    | 'MODEL_ARCH'
+    | 'LORA_HPO'
+    | 'PACKING_MASKING'
+    | 'ALIGNMENT_RLVR'
+    | 'VISION_VLM';
+}
+
+export interface SideBySideScriptDiffResult {
+  leftTitle: string;
+  rightTitle: string;
+  totalLines: number;
+  changedLinesCount: number;
+  addedLinesCount: number;
+  removedLinesCount: number;
+  keyTakeaways: string[];
+  diffRows: ScriptDiffLine[];
+}
+
+function classifyDiffLineCategory(
+  lineText: string
+): ScriptDiffLine['highlightCategory'] | undefined {
+  if (/vision|image|mmproj|pan_and_scan|siglip|navit|Gemma4|VL/i.test(lineText)) {
+    return 'VISION_VLM';
+  }
+  if (/lora|r\s*=|lora_alpha|learning_rate|lr_scheduler|neftune|use_dora|use_rslora/i.test(lineText)) {
+    return 'LORA_HPO';
+  }
+  if (/packing|multipack|completion_only|train_on_inputs|DataCollator/i.test(lineText)) {
+    return 'PACKING_MASKING';
+  }
+  if (/ORPO|SimPO|DPO|GRPO|beta|preference/i.test(lineText)) {
+    return 'ALIGNMENT_RLVR';
+  }
+  if (/model_name|base_model|arch|Qwen|LFM|Gemma/i.test(lineText)) {
+    return 'MODEL_ARCH';
+  }
+  return undefined;
+}
+
+export function computeSideBySideScriptDiff(params: {
+  leftTitle: string;
+  leftCode: string;
+  rightTitle: string;
+  rightCode: string;
+}): SideBySideScriptDiffResult {
+  const leftLines = params.leftCode.split('\n');
+  const rightLines = params.rightCode.split('\n');
+  const maxLen = Math.max(leftLines.length, rightLines.length);
+
+  const diffRows: ScriptDiffLine[] = [];
+  let changedLinesCount = 0;
+  let addedLinesCount = 0;
+  let removedLinesCount = 0;
+
+  for (let i = 0; i < maxLen; i++) {
+    const l = i < leftLines.length ? leftLines[i] : null;
+    const r = i < rightLines.length ? rightLines[i] : null;
+
+    if (l !== null && r !== null) {
+      if (l === r) {
+        diffRows.push({
+          lineNumberLeft: i + 1,
+          lineNumberRight: i + 1,
+          leftText: l,
+          rightText: r,
+          status: 'UNCHANGED',
+        });
+      } else {
+        changedLinesCount++;
+        diffRows.push({
+          lineNumberLeft: i + 1,
+          lineNumberRight: i + 1,
+          leftText: l,
+          rightText: r,
+          status: 'MODIFIED',
+          highlightCategory: classifyDiffLineCategory(`${l} ${r}`),
+        });
+      }
+    } else if (l === null && r !== null) {
+      addedLinesCount++;
+      diffRows.push({
+        lineNumberLeft: null,
+        lineNumberRight: i + 1,
+        leftText: '',
+        rightText: r,
+        status: 'ADDED',
+        highlightCategory: classifyDiffLineCategory(r),
+      });
+    } else if (l !== null && r === null) {
+      removedLinesCount++;
+      diffRows.push({
+        lineNumberLeft: i + 1,
+        lineNumberRight: null,
+        leftText: l,
+        rightText: '',
+        status: 'REMOVED',
+        highlightCategory: classifyDiffLineCategory(l),
+      });
+    }
+  }
+
+  const keyTakeaways: string[] = [];
+  if (diffRows.some((d) => d.highlightCategory === 'VISION_VLM')) {
+    keyTakeaways.push(
+      'Multimodal VLM Vision Tower freeze guard, Pan-&-Scan / NaViT patch processors, and image token collators differed.'
+    );
+  }
+  if (diffRows.some((d) => d.highlightCategory === 'LORA_HPO')) {
+    keyTakeaways.push(
+      'LoRA/DoRA rank (r), scaling alpha, learning rate, or WSD/NEFTune regularization parameters changed.'
+    );
+  }
+  if (diffRows.some((d) => d.highlightCategory === 'PACKING_MASKING')) {
+    keyTakeaways.push(
+      'FlashAttention-2/3 sample packing (Multipack) or completion-only prompt loss masking (-100) toggled.'
+    );
+  }
+  if (diffRows.some((d) => d.highlightCategory === 'ALIGNMENT_RLVR')) {
+    keyTakeaways.push(
+      'Post-SFT Stage 2 preference alignment (ORPO/SimPO/DPO) beta margin or Stage 3 GRPO verifiers updated.'
+    );
+  }
+  if (keyTakeaways.length === 0) {
+    keyTakeaways.push('Scripts are structurally aligned with identical hyperparameter bindings.');
+  }
+
+  return {
+    leftTitle: params.leftTitle,
+    rightTitle: params.rightTitle,
+    totalLines: maxLen,
+    changedLinesCount,
+    addedLinesCount,
+    removedLinesCount,
+    keyTakeaways,
+    diffRows,
+  };
+}
+

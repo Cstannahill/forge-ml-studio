@@ -47,6 +47,13 @@ import {
   buildWebGpuAndTransformersJsExportBundle,
   runPipelineDoctorAudit,
   parseEngineMetricLine,
+  END_TO_END_RECIPE_PRESETS,
+  computeRecipePresetDiffPreview,
+  DEFAULT_WORKSPACE_PROJECTS,
+  exportForgeMlWorkspaceJson,
+  parseAndValidateForgeMlWorkspaceJson,
+  solveHardwareAndTimeBudgetConstraints,
+  computeSideBySideScriptDiff,
 } from './pipelineLogic.ts';
 import { CURATED_DATASET_BLENDS } from '../data/curatedDatasetBlends.ts';
 import { ML_GLOSSARY } from './glossaryData.ts';
@@ -1407,5 +1414,118 @@ test('buildVisionVlmBenchmarkDashboard and Gemma4-VL Pan-&-Scan serialization tr
   assert.equal(gemma4Audit.tokens[0].tokenLiteral, '<start_of_image>');
   assert.equal(gemma4Audit.tokens[1].tokenLiteral, '<image_soft_token>');
 });
+
+test('END_TO_END_RECIPE_PRESETS and computeRecipePresetDiffPreview provide 6 goal-driven autopilot profiles with accurate diff previews', () => {
+  assert.equal(END_TO_END_RECIPE_PRESETS.length, 6);
+  const gemma4Recipe = END_TO_END_RECIPE_PRESETS.find(
+    (r) => r.id === 'recipe-gemma4-e4b-doc-table-ocr'
+  );
+  assert.ok(gemma4Recipe);
+  assert.equal(gemma4Recipe?.pipelineTrack, 'VISION_VLM');
+  assert.equal(gemma4Recipe?.targetModelId, 'google/gemma-4-e4b-vision-it');
+  assert.equal(gemma4Recipe?.visionTargetFormat, 'GEMMA4_VL_PAN_SCAN');
+
+  const diffPreview = computeRecipePresetDiffPreview(
+    {
+      pipelineTrack: 'TEXT_LLM',
+      selectedModelId: 'Qwen/Qwen3.5-2B-Instruct',
+      selectedVisionModelId: 'LiquidAI/LFM2.5-VL-450M-Instruct',
+      targetFormat: 'chatml',
+      visionTargetFormat: 'QWEN_VL_CHATML',
+      hpoConfig: {
+        learningRate: 0.0002,
+        loraRank: 16,
+        loraAlpha: 32,
+        loraDropout: 0.05,
+        warmupRatio: 0.05,
+        weightDecay: 0.01,
+        neftuneAlpha: 5,
+        batchSize: 8,
+        lrScheduler: 'cosine',
+      },
+      samplePackingEnabled: false,
+      completionOnlyLossEnabled: false,
+    },
+    gemma4Recipe!
+  );
+
+  assert.equal(diffPreview.diffs.length, 9);
+  assert.ok(diffPreview.changedCount >= 6);
+  assert.equal(diffPreview.diffs[0].field, 'Modality Track');
+  assert.equal(diffPreview.diffs[0].changed, true);
+});
+
+test('exportForgeMlWorkspaceJson and parseAndValidateForgeMlWorkspaceJson round-trip .forgeml.json workspace snapshots cleanly', () => {
+  assert.equal(DEFAULT_WORKSPACE_PROJECTS.length, 3);
+  const exportedJson = exportForgeMlWorkspaceJson(
+    DEFAULT_WORKSPACE_PROJECTS[1],
+    DEFAULT_WORKSPACE_PROJECTS
+  );
+  const parsed = parseAndValidateForgeMlWorkspaceJson(exportedJson);
+  assert.equal(parsed.valid, true);
+  assert.equal(parsed.snapshot?.schemaVersion, 'forgeml-workspace-v1.0');
+  assert.equal(
+    parsed.snapshot?.activeProject.projectId,
+    DEFAULT_WORKSPACE_PROJECTS[1].projectId
+  );
+  assert.equal(parsed.snapshot?.projects.length, 3);
+
+  const invalid = parseAndValidateForgeMlWorkspaceJson('{"schemaVersion": "wrong"}');
+  assert.equal(invalid.valid, false);
+  assert.ok(invalid.error?.includes('schemaVersion'));
+});
+
+test('solveHardwareAndTimeBudgetConstraints backwards-solves RTX 4070 12GB / 45m constraints and tight 4GB LISA constraints', () => {
+  const rtx4070Solution = solveHardwareAndTimeBudgetConstraints({
+    maxVramGb: 12,
+    maxMinutes: 45,
+    targetQuality: 'MAX_ACCURACY',
+    paramsBillions: 2.0,
+    architecture: 'Qwen3.5',
+    datasetSampleCount: 12000,
+  });
+
+  assert.equal(rtx4070Solution.feasible, true);
+  assert.ok(rtx4070Solution.estimatedPeakVramGb <= 12);
+  assert.ok(rtx4070Solution.estimatedTrainingMinutes <= 45);
+  assert.equal(rtx4070Solution.loraRank, 64);
+  assert.equal(rtx4070Solution.samplePackingEnabled, true);
+  assert.ok(rtx4070Solution.solverRationale.length >= 3);
+
+  const fastSprintSolution = solveHardwareAndTimeBudgetConstraints({
+    maxVramGb: 8,
+    maxMinutes: 15,
+    targetQuality: 'FASTEST_PROTOTYPE',
+    paramsBillions: 1.2,
+    architecture: 'LFM2.5',
+    datasetSampleCount: 10000,
+  });
+
+  assert.equal(fastSprintSolution.feasible, true);
+  assert.equal(fastSprintSolution.enableLisaLayerSampling, true);
+  assert.equal(fastSprintSolution.loraRank, 16);
+  assert.ok(fastSprintSolution.estimatedTrainingMinutes <= 15);
+});
+
+test('computeSideBySideScriptDiff highlights exact line changes and categorizes LORA_HPO and VISION_VLM modifications', () => {
+  const leftScript = `model_id = "Qwen/Qwen3.5-2B-Instruct"\nr = 16\nlora_alpha = 32\npacking = False`;
+  const rightScript = `model_id = "google/gemma-4-e4b-vision-it"\nr = 32\nlora_alpha = 64\npacking = True\nfreeze_vision_tower = True`;
+
+  const diff = computeSideBySideScriptDiff({
+    leftTitle: 'Baseline Qwen3.5 Text',
+    leftCode: leftScript,
+    rightTitle: 'Tuned Gemma4-VL Vision',
+    rightCode: rightScript,
+  });
+
+  assert.equal(diff.totalLines, 5);
+  assert.equal(diff.changedLinesCount, 4);
+  assert.equal(diff.addedLinesCount, 1);
+  assert.ok(diff.diffRows.some((r) => r.highlightCategory === 'VISION_VLM'));
+  assert.ok(diff.diffRows.some((r) => r.highlightCategory === 'LORA_HPO'));
+  assert.ok(diff.diffRows.some((r) => r.highlightCategory === 'PACKING_MASKING'));
+  assert.ok(diff.keyTakeaways.length >= 2);
+});
+
 
 
