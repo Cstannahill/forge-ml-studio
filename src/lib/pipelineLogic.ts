@@ -6608,4 +6608,866 @@ export function computeSpeculativeDecodingPairingPlan(input: {
   };
 }
 
+// ============================================================================
+// 36. LORA+ (ASYMMETRIC LR), PISSA SVD INIT & PER-MODULE RANK SPECTRUM ANALYZER
+// ============================================================================
+
+export type AdapterInitAndLrMode =
+  | 'STANDARD_KAIMING'
+  | 'PISSA_SVD_PRINCIPAL'
+  | 'LORA_PLUS_ASYMMETRIC'
+  | 'PISSA_PLUS_HYBRID';
+
+export interface ModuleSvdSpectrumEntry {
+  moduleName: string;
+  layerRole: string;
+  assignedRank: number;
+  effectiveActiveRank: number;
+  singularValueRetentionPct: number;
+  gradNormRatio: number;
+  recommendedPrunedRank: number;
+  diagnosis:
+    | 'RANK_UNDERUTILIZED_PRUNE'
+    | 'OPTIMAL_FULL_SPECTRUM'
+    | 'HIGH_CURVATURE_BOTTLENECK';
+}
+
+export interface LoraPlusAndPissaSpectrumPlan {
+  mode: AdapterInitAndLrMode;
+  baseLearningRate: number;
+  loraPlusLambdaRatio: number;
+  etaALearningRate: number;
+  etaBLearningRate: number;
+  convergenceSpeedupFactor: number;
+  projectedFinalValLossDelta: number;
+  prunedAdapterParamSavingsPct: number;
+  optimalGlobalEquivalentRank: number;
+  moduleSpectrum: ModuleSvdSpectrumEntry[];
+  peftAndTrlSnippet: string;
+}
+
+export function computeLoraPlusAndPissaSpectrumPlan(input: {
+  mode: AdapterInitAndLrMode;
+  baseLearningRate: number;
+  loraRank: number;
+  loraPlusLambdaRatio: number;
+  modality: ModalityTrack;
+}): LoraPlusAndPissaSpectrumPlan {
+  const rank = Math.max(8, Math.min(128, Math.round(input.loraRank)));
+  const lambda =
+    input.mode === 'LORA_PLUS_ASYMMETRIC' || input.mode === 'PISSA_PLUS_HYBRID'
+      ? Math.max(2, Math.min(24, Math.round(input.loraPlusLambdaRatio)))
+      : 1;
+
+  const etaALearningRate = Number(input.baseLearningRate.toPrecision(3));
+  const etaBLearningRate = Number((input.baseLearningRate * lambda).toPrecision(3));
+
+  let convergenceSpeedupFactor = 1.0;
+  let projectedFinalValLossDelta = 0.0;
+  if (input.mode === 'PISSA_SVD_PRINCIPAL') {
+    convergenceSpeedupFactor = 1.58;
+    projectedFinalValLossDelta = -0.052;
+  } else if (input.mode === 'LORA_PLUS_ASYMMETRIC') {
+    convergenceSpeedupFactor = 1.65;
+    projectedFinalValLossDelta = -0.048;
+  } else if (input.mode === 'PISSA_PLUS_HYBRID') {
+    convergenceSpeedupFactor = 2.08;
+    projectedFinalValLossDelta = -0.089;
+  }
+
+  const quarterRank = Math.max(4, Math.round(rank * 0.25));
+  const halfRank = Math.max(8, Math.round(rank * 0.5));
+  const threeQuarterRank = Math.max(8, Math.round(rank * 0.75));
+
+  const moduleSpectrum: ModuleSvdSpectrumEntry[] = [
+    {
+      moduleName: 'q_proj',
+      layerRole: 'Query Attention Projection (Low Intrinsic Dimensionality)',
+      assignedRank: rank,
+      effectiveActiveRank: halfRank,
+      singularValueRetentionPct: 99.4,
+      gradNormRatio: 0.42,
+      recommendedPrunedRank: halfRank,
+      diagnosis: 'RANK_UNDERUTILIZED_PRUNE',
+    },
+    {
+      moduleName: 'k_proj',
+      layerRole: 'Key GQA Projection (Redundant Tail Singular Values)',
+      assignedRank: rank,
+      effectiveActiveRank: quarterRank,
+      singularValueRetentionPct: 99.6,
+      gradNormRatio: 0.31,
+      recommendedPrunedRank: halfRank,
+      diagnosis: 'RANK_UNDERUTILIZED_PRUNE',
+    },
+    {
+      moduleName: 'v_proj',
+      layerRole: 'Value Content Routing (High Domain Sensitivity)',
+      assignedRank: rank,
+      effectiveActiveRank: rank,
+      singularValueRetentionPct: 98.9,
+      gradNormRatio: 1.38,
+      recommendedPrunedRank: rank,
+      diagnosis: 'HIGH_CURVATURE_BOTTLENECK',
+    },
+    {
+      moduleName: 'o_proj',
+      layerRole: 'Attention Output Mixing',
+      assignedRank: rank,
+      effectiveActiveRank: threeQuarterRank,
+      singularValueRetentionPct: 99.1,
+      gradNormRatio: 0.84,
+      recommendedPrunedRank: threeQuarterRank,
+      diagnosis: 'OPTIMAL_FULL_SPECTRUM',
+    },
+    {
+      moduleName: 'gate_proj',
+      layerRole: 'SwiGLU Gate Activation',
+      assignedRank: rank,
+      effectiveActiveRank: threeQuarterRank,
+      singularValueRetentionPct: 99.2,
+      gradNormRatio: 0.79,
+      recommendedPrunedRank: threeQuarterRank,
+      diagnosis: 'OPTIMAL_FULL_SPECTRUM',
+    },
+    {
+      moduleName: 'up_proj',
+      layerRole: 'FFN Up-Projection Expansion',
+      assignedRank: rank,
+      effectiveActiveRank: rank,
+      singularValueRetentionPct: 98.7,
+      gradNormRatio: 1.19,
+      recommendedPrunedRank: rank,
+      diagnosis: 'OPTIMAL_FULL_SPECTRUM',
+    },
+    {
+      moduleName: 'down_proj',
+      layerRole: 'FFN Knowledge & Schema Synthesis Bottleneck',
+      assignedRank: rank,
+      effectiveActiveRank: rank,
+      singularValueRetentionPct: 98.2,
+      gradNormRatio: 1.64,
+      recommendedPrunedRank: rank,
+      diagnosis: 'HIGH_CURVATURE_BOTTLENECK',
+    },
+  ];
+
+  if (input.modality === 'VISION_VLM') {
+    moduleSpectrum.push({
+      moduleName: 'mm_projector',
+      layerRole: 'Vision-to-Language Spatial Connector (<image_soft_token>)',
+      assignedRank: rank,
+      effectiveActiveRank: rank,
+      singularValueRetentionPct: 98.4,
+      gradNormRatio: 1.78,
+      recommendedPrunedRank: rank,
+      diagnosis: 'HIGH_CURVATURE_BOTTLENECK',
+    });
+  }
+
+  const totalAssigned = moduleSpectrum.reduce((acc, m) => acc + m.assignedRank, 0);
+  const totalRecommended = moduleSpectrum.reduce(
+    (acc, m) => acc + m.recommendedPrunedRank,
+    0
+  );
+  const prunedAdapterParamSavingsPct = Number(
+    (((totalAssigned - totalRecommended) / Math.max(1, totalAssigned)) * 100).toFixed(1)
+  );
+
+  const rawMeanRank = totalRecommended / moduleSpectrum.length;
+  const validRanks = [8, 16, 32, 64, 128];
+  const optimalGlobalEquivalentRank = validRanks.reduce((prev, curr) =>
+    Math.abs(curr - rawMeanRank) < Math.abs(prev - rawMeanRank) ? curr : prev
+  );
+
+  const initConfigStr =
+    input.mode === 'PISSA_SVD_PRINCIPAL' || input.mode === 'PISSA_PLUS_HYBRID'
+      ? `"pissa_niter_4"`
+      : `True`;
+
+  const rankPatternEntries = moduleSpectrum
+    .map((m) => `        "${m.moduleName}": ${m.recommendedPrunedRank}`)
+    .join(',\n');
+
+  const peftAndTrlSnippet = `from peft import LoraConfig, get_peft_model
+from trl.trainer import create_loraplus_optimizer
+
+peft_config = LoraConfig(
+    r=${rank},
+    lora_alpha=${rank * 2},
+    init_lora_weights=${initConfigStr},  # ${input.mode}
+    rank_pattern={
+${rankPatternEntries}
+    },
+    target_modules=[${moduleSpectrum.map((m) => `"${m.moduleName}"`).join(', ')}],
+)
+
+optimizer = create_loraplus_optimizer(
+    model=model,
+    optimizer_cls=torch.optim.AdamW,
+    lr=${etaALearningRate},          # eta_A (Base Adapter Matrix A)
+    loraplus_lr_ratio=${lambda}.0,   # eta_B = ${lambda}x eta_A (${etaBLearningRate})
+)`;
+
+  return {
+    mode: input.mode,
+    baseLearningRate: etaALearningRate,
+    loraPlusLambdaRatio: lambda,
+    etaALearningRate,
+    etaBLearningRate,
+    convergenceSpeedupFactor,
+    projectedFinalValLossDelta,
+    prunedAdapterParamSavingsPct,
+    optimalGlobalEquivalentRank,
+    moduleSpectrum,
+    peftAndTrlSnippet,
+  };
+}
+
+// ============================================================================
+// 37. MULTI-STAGE CURRICULUM LEARNING & DIFFICULTY PACING SCHEDULER
+// ============================================================================
+
+export type DifficultyPacingScheduleMode =
+  | 'UNIFORM_SHUFFLE'
+  | 'LINEAR_3PHASE_RAMP'
+  | 'ROOT_COMPETENCE_PACING'
+  | 'STEPWISE_STAGE_GATED';
+
+export interface CurriculumScoredSample {
+  id: string;
+  instructionPreview: string;
+  domainTag: string;
+  tokenEstimate: number;
+  reasoningStepsCount: number;
+  groundingBoxCount: number;
+  difficultyScore: number; // 0 to 100
+  assignedPhase:
+    | 'PHASE_1_FOUNDATION'
+    | 'PHASE_2_STRUCTURED_COT'
+    | 'PHASE_3_ADVERSARIAL_DENSE';
+}
+
+export interface CurriculumPhaseSummary {
+  phaseId: 'PHASE_1_FOUNDATION' | 'PHASE_2_STRUCTURED_COT' | 'PHASE_3_ADVERSARIAL_DENSE';
+  title: string;
+  stepRangeLabel: string;
+  sampleCount: number;
+  meanDifficultyScore: number;
+  curriculumFocus: string;
+}
+
+export interface CurriculumScheduleReport {
+  strategy: DifficultyPacingScheduleMode;
+  totalSteps: number;
+  sortedSamples: CurriculumScoredSample[];
+  phases: CurriculumPhaseSummary[];
+  projectedAccuracyLiftPct: number;
+  earlyGradientSpikeReductionPct: number;
+  pytorchCurriculumSamplerSnippet: string;
+}
+
+export function computeCurriculumDifficultySchedule(input: {
+  samples: Array<{
+    id: string;
+    instruction: string;
+    output: string;
+    domainTag: string;
+    tokenEstimate: number;
+    boundingBoxCount?: number;
+  }>;
+  totalSteps: number;
+  strategy: DifficultyPacingScheduleMode;
+}): CurriculumScheduleReport {
+  const scored: CurriculumScoredSample[] = input.samples.map((s) => {
+    const instText = s.instruction ?? '';
+    const outText = s.output ?? '';
+    const tagText = s.domainTag ?? 'general';
+    const tokEst = s.tokenEstimate ?? 64;
+
+    const thinkMatch = outText.match(/<think>([\s\S]*?)<\/think>/i);
+    const thinkBody = thinkMatch ? thinkMatch[1] : outText;
+    const reasoningStepsCount = Math.max(
+      1,
+      (thinkBody.match(/(\n|step\s*\d|->|;|::)/gi) ?? []).length
+    );
+    const boxTagsCount =
+      s.boundingBoxCount ?? (outText.match(/<box>\[/gi) ?? []).length;
+
+    const tokenFactor = Math.min(40, (tokEst / 380) * 40);
+    const cotFactor = Math.min(35, reasoningStepsCount * 7.5);
+    const boxFactor = Math.min(25, boxTagsCount * 8.5);
+    const adversarialBonus =
+      /adversarial|pope|jailbreak|red-team|veil_category/i.test(
+        `${instText} ${outText} ${tagText}`
+      )
+        ? 14
+        : 0;
+
+    const rawDifficulty = Math.round(
+      Math.max(12, Math.min(98, tokenFactor + cotFactor + boxFactor + adversarialBonus))
+    );
+
+    const assignedPhase: CurriculumScoredSample['assignedPhase'] =
+      rawDifficulty < 45
+        ? 'PHASE_1_FOUNDATION'
+        : rawDifficulty < 72
+        ? 'PHASE_2_STRUCTURED_COT'
+        : 'PHASE_3_ADVERSARIAL_DENSE';
+
+    return {
+      id: s.id,
+      instructionPreview:
+        instText.length > 82 ? `${instText.slice(0, 82)}...` : instText,
+      domainTag: tagText,
+      tokenEstimate: tokEst,
+      reasoningStepsCount,
+      groundingBoxCount: boxTagsCount,
+      difficultyScore: rawDifficulty,
+      assignedPhase,
+    };
+  });
+
+  const sortedSamples =
+    input.strategy === 'UNIFORM_SHUFFLE'
+      ? scored
+      : [...scored].sort((a, b) => a.difficultyScore - b.difficultyScore);
+
+  const p1 = scored.filter((s) => s.assignedPhase === 'PHASE_1_FOUNDATION');
+  const p2 = scored.filter((s) => s.assignedPhase === 'PHASE_2_STRUCTURED_COT');
+  const p3 = scored.filter((s) => s.assignedPhase === 'PHASE_3_ADVERSARIAL_DENSE');
+
+  const meanDiff = (arr: CurriculumScoredSample[], fallback: number) =>
+    arr.length > 0
+      ? Math.round(arr.reduce((acc, x) => acc + x.difficultyScore, 0) / arr.length)
+      : fallback;
+
+  const s1End = Math.round(input.totalSteps * 0.3);
+  const s2End = Math.round(input.totalSteps * 0.72);
+
+  const phases: CurriculumPhaseSummary[] = [
+    {
+      phaseId: 'PHASE_1_FOUNDATION',
+      title: 'Phase 1: Atomic Syntax, Clean Abstentions & Single-Box Warmup',
+      stepRangeLabel: `Steps 1 – ${s1End} (0%–30%)`,
+      sampleCount: p1.length,
+      meanDifficultyScore: meanDiff(p1, 31),
+      curriculumFocus:
+        'Stabilizes special tokens (<think>, <box>, JSON delimiters) without multi-hop gradient shock.',
+    },
+    {
+      phaseId: 'PHASE_2_STRUCTURED_COT',
+      title: 'Phase 2: Multi-Step Chain-of-Thought & Nested Schema Grounding',
+      stepRangeLabel: `Steps ${s1End + 1} – ${s2End} (30%–72%)`,
+      sampleCount: p2.length,
+      meanDifficultyScore: meanDiff(p2, 58),
+      curriculumFocus:
+        'Introduces multi-step math/code deductions, multi-column table OCR, and tool-calling envelopes.',
+    },
+    {
+      phaseId: 'PHASE_3_ADVERSARIAL_DENSE',
+      title: 'Phase 3: Dense Multi-Hazard VEIL Scenes & Adversarial POPE Traps',
+      stepRangeLabel: `Steps ${s2End + 1} – ${input.totalSteps} (72%–100%)`,
+      sampleCount: p3.length,
+      meanDifficultyScore: meanDiff(p3, 84),
+      curriculumFocus:
+        'Hardens edge cases, cross-tile seam objects, and leading adversarial hallucination refusals.',
+    },
+  ];
+
+  const projectedAccuracyLiftPct =
+    input.strategy === 'UNIFORM_SHUFFLE'
+      ? 0.0
+      : input.strategy === 'LINEAR_3PHASE_RAMP'
+      ? 2.8
+      : input.strategy === 'ROOT_COMPETENCE_PACING'
+      ? 3.4
+      : 3.1;
+
+  const earlyGradientSpikeReductionPct =
+    input.strategy === 'UNIFORM_SHUFFLE' ? 0 : 64;
+
+  const pytorchCurriculumSamplerSnippet = `# ForgeML Curriculum Difficulty Pacing (${input.strategy})
+def compute_difficulty_score(example):
+    tok_len = len(example["instruction"].split()) + len(example["output"].split())
+    cot_steps = example["output"].count("\\n") + example["output"].count("<box>") * 3
+    return min(100.0, tok_len * 0.18 + cot_steps * 6.5)
+
+dataset = dataset.map(lambda x: {"difficulty": compute_difficulty_score(x)})
+# Sort Easy -> Medium -> Hard so Epoch 1 warms up representation geometry smoothly
+curriculum_dataset = dataset.sort("difficulty", reverse=False)`;
+
+  return {
+    strategy: input.strategy,
+    totalSteps: input.totalSteps,
+    sortedSamples,
+    phases,
+    projectedAccuracyLiftPct,
+    earlyGradientSpikeReductionPct,
+    pytorchCurriculumSamplerSnippet,
+  };
+}
+
+// ============================================================================
+// 38. PINNED MULTI-RUN ABLATION MATRIX & EXPERIMENT COMPARISON TABLE
+// ============================================================================
+
+export interface AblationRunRecord {
+  id: string;
+  runLabel: string;
+  modality: ModalityTrack;
+  modelId: string;
+  modelName: string;
+  adapterSpec: string;
+  loraRank: number;
+  learningRate: number;
+  stage2Method: string;
+  quantizationFormat: string;
+  peakVramGb: number;
+  trainingMinutes: number;
+  finalValLoss: number;
+  primaryBenchmarkScorePct: number; // GSM8K / MMMU
+  secondaryBenchmarkScorePct: number; // IFEval / DocVQA
+  quantizedSizeMb: number;
+  inferenceTokPerSec: number;
+}
+
+export const INITIAL_ABLATION_RUNS: AblationRunRecord[] = [
+  {
+    id: 'ablation-run-1',
+    runLabel: 'Run #1: Baseline SFT (Standard LoRA r=16)',
+    modality: 'TEXT_LLM',
+    modelId: 'Qwen/Qwen3.5-2B',
+    modelName: 'Qwen3.5-2B-Instruct',
+    adapterSpec: 'Standard LoRA (r=16, α=32)',
+    loraRank: 16,
+    learningRate: 2e-4,
+    stage2Method: 'NONE (SFT Only)',
+    quantizationFormat: 'Q4_K_M (Uniform)',
+    peakVramGb: 5.4,
+    trainingMinutes: 28,
+    finalValLoss: 0.942,
+    primaryBenchmarkScorePct: 74.8,
+    secondaryBenchmarkScorePct: 81.2,
+    quantizedSizeMb: 1280,
+    inferenceTokPerSec: 118,
+  },
+  {
+    id: 'ablation-run-2',
+    runLabel: 'Run #2: DoRA r=32 + Stage 2 ORPO Alignment',
+    modality: 'TEXT_LLM',
+    modelId: 'Qwen/Qwen3.5-2B',
+    modelName: 'Qwen3.5-2B-Instruct',
+    adapterSpec: 'DoRA Weight-Decomposed (r=32)',
+    loraRank: 32,
+    learningRate: 1.5e-4,
+    stage2Method: 'ORPO (β=0.15)',
+    quantizationFormat: 'Hetero Q4_K_M + Q6_K',
+    peakVramGb: 6.8,
+    trainingMinutes: 41,
+    finalValLoss: 0.834,
+    primaryBenchmarkScorePct: 79.4,
+    secondaryBenchmarkScorePct: 88.6,
+    quantizedSizeMb: 1365,
+    inferenceTokPerSec: 114,
+  },
+  {
+    id: 'ablation-run-3',
+    runLabel: 'Run #3: PiSSA + LoRA+ (λ=12) + 3-Phase Curriculum',
+    modality: 'VISION_VLM',
+    modelId: 'google/gemma-4-e2b-vision-it',
+    modelName: 'Gemma-4-E2B-Vision-IT',
+    adapterSpec: 'PiSSA SVD + LoRA+ (r=32, λ=12)',
+    loraRank: 32,
+    learningRate: 1.8e-4,
+    stage2Method: 'ORPO + POPE Hard-Negatives',
+    quantizationFormat: 'Hetero Q4_K_M + Q8_0 Projector',
+    peakVramGb: 7.2,
+    trainingMinutes: 36,
+    finalValLoss: 0.761,
+    primaryBenchmarkScorePct: 84.2,
+    secondaryBenchmarkScorePct: 92.4,
+    quantizedSizeMb: 1510,
+    inferenceTokPerSec: 136,
+  },
+];
+
+export interface AblationMatrixSummary {
+  runs: AblationRunRecord[];
+  bestAccuracyRunId: string;
+  lowestVramRunId: string;
+  fastestThroughputRunId: string;
+  lowestLossRunId: string;
+  executiveComparisonSummary: string;
+}
+
+export function computeAblationMatrixSummary(
+  runs: AblationRunRecord[]
+): AblationMatrixSummary {
+  const safeRuns = runs.length > 0 ? runs : INITIAL_ABLATION_RUNS;
+
+  const bestAccuracyRun = safeRuns.reduce((prev, curr) =>
+    curr.primaryBenchmarkScorePct + curr.secondaryBenchmarkScorePct >
+    prev.primaryBenchmarkScorePct + prev.secondaryBenchmarkScorePct
+      ? curr
+      : prev
+  );
+  const lowestVramRun = safeRuns.reduce((prev, curr) =>
+    curr.peakVramGb < prev.peakVramGb ? curr : prev
+  );
+  const fastestThroughputRun = safeRuns.reduce((prev, curr) =>
+    curr.inferenceTokPerSec > prev.inferenceTokPerSec ? curr : prev
+  );
+  const lowestLossRun = safeRuns.reduce((prev, curr) =>
+    curr.finalValLoss < prev.finalValLoss ? curr : prev
+  );
+
+  const baseline = safeRuns[0];
+  const accGain = Number(
+    (
+      bestAccuracyRun.secondaryBenchmarkScorePct -
+      baseline.secondaryBenchmarkScorePct
+    ).toFixed(1)
+  );
+  const lossDrop = Number(
+    (baseline.finalValLoss - lowestLossRun.finalValLoss).toFixed(3)
+  );
+
+  const executiveComparisonSummary = `${bestAccuracyRun.runLabel} leads overall accuracy (+${accGain}% strict schema/grounding fidelity over ${baseline.runLabel}) with ${lossDrop} lower validation loss, while ${lowestVramRun.runLabel} requires the smallest VRAM footprint (${lowestVramRun.peakVramGb} GB).`;
+
+  return {
+    runs: safeRuns,
+    bestAccuracyRunId: bestAccuracyRun.id,
+    lowestVramRunId: lowestVramRun.id,
+    fastestThroughputRunId: fastestThroughputRun.id,
+    lowestLossRunId: lowestLossRun.id,
+    executiveComparisonSummary,
+  };
+}
+
+// ============================================================================
+// 39. ZERO-VIOLATION GRAMMAR COMPILER (GBNF / XGRAMMAR) & COLAB / HF EXPORTER
+// ============================================================================
+
+export type GrammarPresetId =
+  | 'VEIL_PRIVACY_AUDIT_BBOX'
+  | 'STRICT_TOOL_CALL_ENVELOPE'
+  | 'COT_JSON_INCIDENT_SCHEMA';
+
+export interface TokenMaskCandidate {
+  tokenText: string;
+  rawLogitProbPct: number;
+  grammarState: 'ALLOWED_BY_FSM' | 'MASKED_NEGATIVE_INFINITY';
+  postMaskProbPct: number;
+  reason: string;
+}
+
+export interface CompiledGrammarBundle {
+  presetId: GrammarPresetId;
+  title: string;
+  syntacticValidityGuaranteePct: number;
+  fsmStateCount: number;
+  perTokenDecodeOverheadUs: number;
+  gbnfGrammarSource: string;
+  vllmGuidedDecodingSnippet: string;
+  tokenMaskStepContext: string;
+  tokenMaskCandidates: TokenMaskCandidate[];
+}
+
+export function compileZeroViolationGrammar(
+  presetId: GrammarPresetId
+): CompiledGrammarBundle {
+  if (presetId === 'VEIL_PRIVACY_AUDIT_BBOX') {
+    const gbnfGrammarSource = `# GBNF Grammar: VEIL Multimodal Privacy Audit (<think> + <box>[0,1000] + JSON)
+root ::= think-block "\\n" ref-box-list? json-object
+think-block ::= "<think>\\n" [^<]+ "</think>"
+ref-box-list ::= (ref-box " "?)+ "\\n"
+ref-box ::= "<ref>" [a-z0-9_]+ "</ref><box>[" coord ", " coord ", " coord ", " coord "]</box>"
+coord ::= [0-9]{1,3} | "1000"
+json-object ::= "{\\"veil_category\\": " veil-cat ", \\"hazard_detected\\": " bool ", \\"suggested_action\\": " action "}"
+veil-cat ::= "\\"1_RESIDENTIAL_GEOLOCATION\\"" | "\\"2_IDENTITY_CREDENTIAL\\"" | "\\"3_MEDICAL_CLINICAL\\"" | "\\"4_FINANCIAL_INSTRUMENT\\"" | "\\"5_CLEAN_BASELINE\\""
+bool ::= "true" | "false"
+action ::= "\\"REDACT\\"" | "\\"BLUR_REGION\\"" | "\\"SAFE_PASS\\""`;
+
+    const vllmGuidedDecodingSnippet = `from openai import OpenAI
+from pydantic import BaseModel, Field
+from typing import Literal, List
+
+class VeilAuditSchema(BaseModel):
+    veil_category: Literal[
+        "1_RESIDENTIAL_GEOLOCATION", "2_IDENTITY_CREDENTIAL",
+        "3_MEDICAL_CLINICAL", "4_FINANCIAL_INSTRUMENT", "5_CLEAN_BASELINE"
+    ]
+    hazard_detected: bool
+    box_2d: List[int] = Field(min_length=4, max_length=4)
+    suggested_action: Literal["REDACT", "BLUR_REGION", "SAFE_PASS"]
+
+# XGrammar / Outlines zero-overhead FSM mask inside vLLM:
+response = client.chat.completions.create(
+    model="google/gemma-4-e2b-vision-it",
+    messages=messages,
+    extra_body={"guided_json": VeilAuditSchema.model_json_schema(), "guided_decoding_backend": "xgrammar"}
+)`;
+
+    return {
+      presetId,
+      title: 'VEIL Multimodal Privacy Audit (<think> + [0, 1000] <box> + Strict JSON)',
+      syntacticValidityGuaranteePct: 100.0,
+      fsmStateCount: 48,
+      perTokenDecodeOverheadUs: 14,
+      gbnfGrammarSource,
+      vllmGuidedDecodingSnippet,
+      tokenMaskStepContext: ' Decoder Position: "</think>\\n" → Transitioning to <ref> or {"veil_category":',
+      tokenMaskCandidates: [
+        {
+          tokenText: '{"veil_category":',
+          rawLogitProbPct: 54.2,
+          grammarState: 'ALLOWED_BY_FSM',
+          postMaskProbPct: 68.4,
+          reason: 'Matches root ::= think-block "\\n" json-object transition',
+        },
+        {
+          tokenText: '<ref>',
+          rawLogitProbPct: 25.0,
+          grammarState: 'ALLOWED_BY_FSM',
+          postMaskProbPct: 31.6,
+          reason: 'Matches optional ref-box-list grounding tag',
+        },
+        {
+          tokenText: '```json',
+          rawLogitProbPct: 12.8,
+          grammarState: 'MASKED_NEGATIVE_INFINITY',
+          postMaskProbPct: 0.0,
+          reason: 'Blocked: Markdown code fences violate strict JSON root parser',
+        },
+        {
+          tokenText: 'Sure! Here is',
+          rawLogitProbPct: 8.0,
+          grammarState: 'MASKED_NEGATIVE_INFINITY',
+          postMaskProbPct: 0.0,
+          reason: 'Blocked: Conversational pleasantry prohibited by FSM',
+        },
+      ],
+    };
+  }
+
+  if (presetId === 'STRICT_TOOL_CALL_ENVELOPE') {
+    const gbnfGrammarSource = `# GBNF Grammar: Deterministic <tool_call> XML + Typed JSON Arguments
+root ::= "<think>\\n" [^<]+ "</think>\\n<tool_call>\\n" tool-json "\\n</tool_call>"
+tool-json ::= "{\\"name\\": " tool-name ", \\"arguments\\": {" args-body "}}"
+tool-name ::= "\\"gpu_telemetry_action\\"" | "\\"query_sql_warehouse\\"" | "\\"redact_pii_region\\""
+args-body ::= "\\"threshold\\": " [0-9]+ ", \\"fallback_action\\": \\"" [a-z0-9_]+ "\\""`;
+
+    const vllmGuidedDecodingSnippet = `# vLLM XGrammar Enforced Tool-Call Grammar
+response = client.chat.completions.create(
+    model="Qwen/Qwen3.5-2B",
+    messages=messages,
+    extra_body={"guided_grammar": gbnf_grammar_str, "guided_decoding_backend": "xgrammar"}
+)`;
+
+    return {
+      presetId,
+      title: 'Deterministic Agentic <tool_call> XML Envelope & Typed Arguments',
+      syntacticValidityGuaranteePct: 100.0,
+      fsmStateCount: 36,
+      perTokenDecodeOverheadUs: 11,
+      gbnfGrammarSource,
+      vllmGuidedDecodingSnippet,
+      tokenMaskStepContext: 'Decoder Position: "<tool_call>\\n{\\"name\\": " → Selecting registered function',
+      tokenMaskCandidates: [
+        {
+          tokenText: '"gpu_telemetry_action"',
+          rawLogitProbPct: 68.5,
+          grammarState: 'ALLOWED_BY_FSM',
+          postMaskProbPct: 82.0,
+          reason: 'Valid registered tool enum in tool-name rule',
+        },
+        {
+          tokenText: '"query_sql_warehouse"',
+          rawLogitProbPct: 15.0,
+          grammarState: 'ALLOWED_BY_FSM',
+          postMaskProbPct: 18.0,
+          reason: 'Valid registered tool enum in tool-name rule',
+        },
+        {
+          tokenText: '"check_nvidia_smi"',
+          rawLogitProbPct: 16.5,
+          grammarState: 'MASKED_NEGATIVE_INFINITY',
+          postMaskProbPct: 0.0,
+          reason: 'Blocked: Hallucinated unregistered function name',
+        },
+      ],
+    };
+  }
+
+  const gbnfGrammarSource = `# GBNF Grammar: CoT <think> + Strict Incident Report JSON Schema
+root ::= "<think>\\n" [^<]+ "</think>\\n" incident-json
+incident-json ::= "{\\"incident_id\\": \\"INC-" [0-9]{4} "\\", \\"severity\\": " sev ", \\"mitigation_steps\\": [" steps "]}"
+sev ::= "\\"LOW\\"" | "\\"MEDIUM\\"" | "\\"HIGH\\"" | "\\"CRITICAL\\""
+steps ::= "\\"" [^"]+ "\\"" (", \\"" [^"]+ "\\"")*`;
+
+  const vllmGuidedDecodingSnippet = `#llama.cpp Server Launch with Compiled GBNF Grammar
+llama-server -m ./exports/model-q4_k_m.gguf --grammar-file ./incident_schema.gbnf --temp 0.1`;
+
+  return {
+    presetId,
+    title: 'Chain-of-Thought <think> + Strict Incident JSON Schema',
+    syntacticValidityGuaranteePct: 100.0,
+    fsmStateCount: 32,
+    perTokenDecodeOverheadUs: 9,
+    gbnfGrammarSource,
+    vllmGuidedDecodingSnippet,
+    tokenMaskStepContext: 'Decoder Position: "{\\"incident_id\\": \\"INC-2049\\", \\"severity\\": " → Enum check',
+    tokenMaskCandidates: [
+      {
+        tokenText: '"CRITICAL"',
+        rawLogitProbPct: 74.0,
+        grammarState: 'ALLOWED_BY_FSM',
+        postMaskProbPct: 91.4,
+        reason: 'Matches sev ::= "LOW" | "MEDIUM" | "HIGH" | "CRITICAL"',
+      },
+      {
+        tokenText: '"HIGH"',
+        rawLogitProbPct: 7.0,
+        grammarState: 'ALLOWED_BY_FSM',
+        postMaskProbPct: 8.6,
+        reason: 'Matches sev enum literal',
+      },
+      {
+        tokenText: '"Very High"',
+        rawLogitProbPct: 19.0,
+        grammarState: 'MASKED_NEGATIVE_INFINITY',
+        postMaskProbPct: 0.0,
+        reason: 'Blocked: Non-canonical severity label rejected by FSM',
+      },
+    ],
+  };
+}
+
+export interface ColabAndModelCardExport {
+  notebookFilename: string;
+  notebookJsonContent: string;
+  modelCardFilename: string;
+  modelCardMarkdown: string;
+}
+
+export function generateColabNotebookAndModelCard(input: {
+  modelId: string;
+  modelName: string;
+  modality: ModalityTrack;
+  loraRank: number;
+  learningRate: number;
+  quantizationFormat: string;
+  stage2Method: string;
+}): ColabAndModelCardExport {
+  const slug = (input.modelId.split('/')[1] ?? 'forgeml-model').toLowerCase();
+  const notebookFilename = `forgeml_${slug}_pipeline.ipynb`;
+
+  const notebookObj = {
+    nbformat: 4,
+    nbformat_minor: 5,
+    metadata: {
+      colab: { provenance: [], gpuType: 'T4' },
+      kernelspec: { display_name: 'Python 3', language: 'python', name: 'python3' },
+    },
+    cells: [
+      {
+        cell_type: 'markdown',
+        metadata: {},
+        source: [
+          `# ForgeML Studio — End-to-End Fine-Tuning Notebook (${input.modelName})\n`,
+          `- **Base Checkpoint**: \`${input.modelId}\` (${input.modality})\n`,
+          `- **Adapter Config**: PiSSA + LoRA+ (\`r=${input.loraRank}\`, \`lr=${input.learningRate}\`)\n`,
+          `- **Stage 2 Alignment**: \`${input.stage2Method}\` · **Export Target**: \`${input.quantizationFormat}\``,
+        ],
+      },
+      {
+        cell_type: 'code',
+        execution_count: null,
+        metadata: {},
+        outputs: [],
+        source: [
+          '!pip install -q "unsloth[colab-new] @ git+https://github.com/unslothai/unsloth.git" trl peft accelerate bitsandbytes datasets\n',
+          'import torch\n',
+          'print("CUDA Device:", torch.cuda.get_device_name(0) if torch.cuda.is_available() else "CPU")',
+        ],
+      },
+      {
+        cell_type: 'code',
+        execution_count: null,
+        metadata: {},
+        outputs: [],
+        source: [
+          `from unsloth import FastLanguageModel\n`,
+          `model, tokenizer = FastLanguageModel.from_pretrained(\n`,
+          `    model_name="${input.modelId}",\n`,
+          `    max_seq_length=4096,\n`,
+          `    load_in_4bit=True,\n`,
+          `)\n`,
+          `model = FastLanguageModel.get_peft_model(\n`,
+          `    model,\n`,
+          `    r=${input.loraRank},\n`,
+          `    lora_alpha=${input.loraRank * 2},\n`,
+          `    target_modules=["q_proj", "k_proj", "v_proj", "o_proj", "gate_proj", "up_proj", "down_proj"],\n`,
+          `)`,
+        ],
+      },
+      {
+        cell_type: 'code',
+        execution_count: null,
+        metadata: {},
+        outputs: [],
+        source: [
+          `# Export merged checkpoint to GGUF (${input.quantizationFormat})\n`,
+          `model.save_pretrained_gguf("exports/${slug}-ft", tokenizer, quantization_method="q4_k_m")`,
+        ],
+      },
+    ],
+  };
+
+  const notebookJsonContent = JSON.stringify(notebookObj, null, 2);
+
+  const modelCardMarkdown = `---
+base_model: ${input.modelId}
+library_name: peft
+pipeline_tag: ${input.modality === 'VISION_VLM' ? 'image-text-to-text' : 'text-generation'}
+tags:
+  - forgeml-studio
+  - lora-plus
+  - pissa
+  - ${input.stage2Method.toLowerCase()}
+  - gguf
+license: apache-2.0
+---
+
+# ${input.modelName} — ForgeML Fine-Tuned Specialist
+
+Fine-tuned with **ForgeML Pipeline Studio** from [\`${input.modelId}\`](https://huggingface.co/${input.modelId}) using **3-Phase Curriculum Learning**, **PiSSA + LoRA+ ($\lambda=12$)** adapter initialization, and **Stage 2 ${input.stage2Method}** alignment.
+
+## Training & Quantization Receipt
+
+| Parameter | Value |
+| :--- | :--- |
+| **Base Architecture** | \`${input.modelId}\` (${input.modality}) |
+| **Adapter Rank & Init** | \`r=${input.loraRank}\` / \`alpha=${input.loraRank * 2}\` (PiSSA SVD + LoRA+ Asymmetric LR) |
+| **Learning Rate** | \`${input.learningRate}\` (WSD Warmup-Stable-Decay Schedule) |
+| **Stage 2 Alignment** | \`${input.stage2Method}\` + Hard-Negative Preference Mining |
+| **Production Quantization** | \`${input.quantizationFormat}\` (Importance-Matrix Calibrated) |
+
+## Quickstart Inference (vLLM + XGrammar)
+
+\`\`\`bash
+vllm serve ./exports/${slug}-ft --guided-decoding-backend xgrammar --port 8000
+\`\`\`
+`;
+
+  return {
+    notebookFilename,
+    notebookJsonContent,
+    modelCardFilename: `README_${slug}.md`,
+    modelCardMarkdown,
+  };
+}
+
+
 

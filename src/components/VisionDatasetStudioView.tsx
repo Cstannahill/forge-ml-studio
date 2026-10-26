@@ -41,6 +41,7 @@ import {
 import { DatasetVersionCommit } from '../data/initialPipelineData';
 import { InfoTooltip } from './InfoTooltip';
 import { VisionTileGridAndBboxDrawerPanel } from './VisionTileGridAndBboxDrawerPanel';
+import { CurriculumAndVlmAugmentationPanel } from './CurriculumAndVlmAugmentationPanel';
 
 interface VisionDatasetStudioViewProps {
   visionModels: RegisteredVisionModel[];
@@ -1940,6 +1941,33 @@ export const VisionDatasetStudioView: React.FC<VisionDatasetStudioViewProps> = (
           }}
         />
       )}
+
+      {/* V11: Multi-Stage Curriculum Pacing Scheduler & Synthetic VLM Visual Corruption / Coordinate-Preserving BBox Transformer */}
+      <CurriculumAndVlmAugmentationPanel
+        modality="VISION_VLM"
+        samples={visionSamples.map((s) => ({
+          id: s.id,
+          instruction: s.instruction,
+          output: `<think>${s.assistantThinking}</think>${s.assistantOutput}`,
+          domainTag: s.taskCategory,
+          tokenEstimate: s.totalTokens,
+          boundingBoxCount: s.boundingBoxes.length,
+        }))}
+        onApplyCurriculumOrder={(orderedIds, msg) => {
+          const idRank = new Map(orderedIds.map((id, idx) => [id, idx]));
+          const reordered = [...visionSamples].sort(
+            (a, b) => (idRank.get(a.id) ?? 999) - (idRank.get(b.id) ?? 999)
+          );
+          onUpdateVisionSamples(reordered, msg);
+        }}
+        activeVisionSample={activeSample}
+        onCommitTransformedVisionBboxes={(updatedSample, summaryMsg) => {
+          const nextSamples = visionSamples.map((s) =>
+            s.id === updatedSample.id ? updatedSample : s
+          );
+          onUpdateVisionSamples(nextSamples, summaryMsg);
+        }}
+      />
     </div>
   );
 };

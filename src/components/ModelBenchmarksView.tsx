@@ -30,6 +30,7 @@ import {
 } from 'recharts';
 import { VeilVisionRedactionCanvas } from './VeilVisionRedactionCanvas';
 import { PopeAndHardNegativeMinerPanel } from './PopeAndHardNegativeMinerPanel';
+import { MultiRunAblationMatrixPanel } from './MultiRunAblationMatrixPanel';
 import {
   ArchitectureFamily,
   PlainLanguageComparison,
@@ -1591,6 +1592,33 @@ export const ModelBenchmarksView: React.FC<ModelBenchmarksViewProps> = ({
         activeVisionModel={vlmDashboard.selectedModel}
         onSendMinedPairToDatasetStudio={(draft) => {
           onSendFlaggedPromptToDatasetStudio?.(draft);
+        }}
+      />
+
+      {/* Section 06C: Pinned Multi-Run Ablation Matrix & Pareto Experiment Comparison Table */}
+      <MultiRunAblationMatrixPanel
+        activeModality={pipelineTrack}
+        activeModelId={
+          pipelineTrack === 'VISION_VLM'
+            ? vlmDashboard.selectedModel.id
+            : selectedModel.id
+        }
+        activeModelName={
+          pipelineTrack === 'VISION_VLM'
+            ? vlmDashboard.selectedModel.name
+            : selectedModel.name
+        }
+        activeParamsBillions={
+          pipelineTrack === 'VISION_VLM'
+            ? vlmDashboard.selectedModel.totalParamsBillions
+            : selectedModel.paramsBillions
+        }
+        onRestoreAblationRunModel={(restoredId) => {
+          if (pipelineTrack === 'VISION_VLM') {
+            onSelectVisionModel?.(restoredId);
+          } else {
+            onSelectModel(restoredId);
+          }
         }}
       />
 

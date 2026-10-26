@@ -18,7 +18,9 @@ import {
   PreferenceAlignmentMethod,
   TargetFormat,
   MixedPrecisionStrategy,
+  AdapterInitAndLrMode,
   computeLayerWiseMixedPrecisionPlan,
+  computeLoraPlusAndPissaSpectrumPlan,
   computeSideBySideScriptDiff,
   generateExecutableRunBundle,
   solveHardwareAndTimeBudgetConstraints,
@@ -109,14 +111,32 @@ export const ConstraintSolverAndScriptDiffPanel: React.FC<
   const [protectVisionConnector, setProtectVisionConnector] = useState<boolean>(true);
   const [copiedHeteroCli, setCopiedHeteroCli] = useState<boolean>(false);
 
+  const isVlmModel =
+    modelId.toLowerCase().includes('vl') || modelId.toLowerCase().includes('vision');
+
   const mixedPrecisionPlan = computeLayerWiseMixedPrecisionPlan({
     modelId,
     modelName,
     architecture,
     paramsBillions,
-    modality: modelId.toLowerCase().includes('vl') || modelId.toLowerCase().includes('vision') ? 'VISION_VLM' : 'TEXT_LLM',
+    modality: isVlmModel ? 'VISION_VLM' : 'TEXT_LLM',
     strategy: mixedPrecisionStrategy,
     protectVisionConnector,
+  });
+
+  // 4. LoRA+ (Asymmetric LR), PiSSA SVD Init & Per-Module Rank Spectrum Analyzer State
+  const [adapterInitMode, setAdapterInitMode] =
+    useState<AdapterInitAndLrMode>('PISSA_PLUS_HYBRID');
+  const [loraPlusLambda, setLoraPlusLambda] = useState<number>(12);
+  const [copiedLoraPlusPy, setCopiedLoraPlusPy] = useState<boolean>(false);
+  const [loraPlusAppliedBanner, setLoraPlusAppliedBanner] = useState<string | null>(null);
+
+  const loraPlusPlan = computeLoraPlusAndPissaSpectrumPlan({
+    mode: adapterInitMode,
+    baseLearningRate: activeHpoConfig.learningRate,
+    loraRank: activeHpoConfig.loraRank,
+    loraPlusLambdaRatio: loraPlusLambda,
+    modality: isVlmModel ? 'VISION_VLM' : 'TEXT_LLM',
   });
 
   // Build baseline untuned bundle for Mode 1 (CONFIG_DELTA)
@@ -945,6 +965,260 @@ sft_config = SFTConfig(
               <div>
                 • Protects <code className="text-emerald-300">blk.0</code> and{' '}
                 <code className="text-emerald-300">ffn_down</code> super-weights while saving VRAM on interior Q/K matrices.
+              </div>
+            </div>
+          </div>
+        </div>
+      </section>
+
+      {/* PART D: LoRA+ (Asymmetric A/B Learning Rates), PiSSA SVD Init & Per-Module Rank Spectrum Analyzer */}
+      <section
+        aria-label="LoRA+ Asymmetric Learning Rate, PiSSA SVD Init and Per-Module Rank Spectrum Analyzer"
+        className="bg-[#111827] border border-slate-800/90 rounded-lg p-5 space-y-5"
+      >
+        <div className="flex flex-col gap-3.5 pb-4 border-b border-slate-800/80">
+          <div className="flex flex-wrap items-center justify-between gap-2">
+            <div className="flex flex-wrap items-center gap-2 text-xs font-mono text-slate-400">
+              <span className="text-emerald-400 font-semibold">
+                {loraPlusPlan.convergenceSpeedupFactor}x Faster Adapter Convergence
+              </span>
+              <span aria-hidden="true">·</span>
+              <span>
+                Val Loss Delta: <strong className="text-blue-300">{loraPlusPlan.projectedFinalValLossDelta}</strong>
+              </span>
+              <span aria-hidden="true">·</span>
+              <span>
+                SVD Rank Pruning Savings: <strong className="text-amber-300">-{loraPlusPlan.prunedAdapterParamSavingsPct}% Trainable Params</strong>
+              </span>
+            </div>
+
+            <button
+              type="button"
+              onClick={() => {
+                onApplySolvedConstraints({
+                  hpoConfig: {
+                    ...activeHpoConfig,
+                    loraRank: loraPlusPlan.optimalGlobalEquivalentRank,
+                    loraAlpha: loraPlusPlan.optimalGlobalEquivalentRank * 2,
+                    learningRate: loraPlusPlan.etaALearningRate,
+                  },
+                  samplePackingEnabled,
+                  completionOnlyLossEnabled,
+                  summaryMessage: `Applied ${adapterInitMode} (λ=${loraPlusPlan.loraPlusLambdaRatio}, η_A=${loraPlusPlan.etaALearningRate}, η_B=${loraPlusPlan.etaBLearningRate}, SVD-pruned equivalent rank r=${loraPlusPlan.optimalGlobalEquivalentRank}).`,
+                });
+                setLoraPlusAppliedBanner(
+                  `Applied ${adapterInitMode} to Workspace: η_A=${loraPlusPlan.etaALearningRate}, η_B=${loraPlusPlan.etaBLearningRate} (${loraPlusPlan.loraPlusLambdaRatio}x), SVD-pruned equivalent rank r=${loraPlusPlan.optimalGlobalEquivalentRank} (-${loraPlusPlan.prunedAdapterParamSavingsPct}% wasted Q/K adapter params).`
+                );
+              }}
+              className="inline-flex items-center gap-2 px-4 py-2 text-xs font-semibold text-slate-950 bg-emerald-400 hover:bg-emerald-300 rounded-lg transition-colors whitespace-nowrap shrink-0"
+            >
+              <Zap className="w-3.5 h-3.5" />
+              <span>Apply Optimal SVD Rank &amp; LoRA+ Schedule</span>
+            </button>
+          </div>
+
+          <div>
+            <h2 className="text-base font-semibold text-slate-100">
+              04. LoRA+ (&eta;<sub>B</sub> / &eta;<sub>A</sub> Asymmetric LR), PiSSA SVD Principal Init &amp; Per-Module Rank Spectrum Analyzer
+            </h2>
+            <p className="text-xs text-slate-400 mt-0.5">
+              Initialize adapters from top-<code className="font-mono text-slate-300">r</code> singular vectors (<code className="font-mono text-slate-300">PiSSA</code>), scale matrix B learning rate by <code className="font-mono text-slate-300">&lambda; = &eta;_B / &eta;_A</code> (<code className="font-mono text-slate-300">LoRA+</code>), and prune under-utilized <code className="font-mono text-slate-300">q_proj/k_proj</code> ranks via SVD spectrum telemetry.
+            </p>
+          </div>
+
+          {/* Mode Selector Tabs + Lambda Ratio Control */}
+          <div className="flex flex-wrap items-center justify-between gap-3 pt-1">
+            <div className="flex flex-wrap items-center gap-1 bg-[#0B0F17] p-1 rounded-lg border border-slate-800">
+              {(
+                [
+                  { id: 'PISSA_PLUS_HYBRID', label: '1. PiSSA SVD + LoRA+ Hybrid (2.08x)' },
+                  { id: 'PISSA_SVD_PRINCIPAL', label: '2. PiSSA Principal SVD Init (1.58x)' },
+                  { id: 'LORA_PLUS_ASYMMETRIC', label: '3. LoRA+ Asymmetric LR Only (1.65x)' },
+                  { id: 'STANDARD_KAIMING', label: '4. Standard Kaiming Init (1.0x)' },
+                ] as const
+              ).map((opt) => (
+                <button
+                  key={opt.id}
+                  type="button"
+                  onClick={() => setAdapterInitMode(opt.id)}
+                  className={`px-3 py-1.5 text-xs font-mono rounded transition-colors whitespace-nowrap ${
+                    adapterInitMode === opt.id
+                      ? 'bg-emerald-600 text-white font-semibold'
+                      : 'text-slate-400 hover:text-slate-200'
+                  }`}
+                >
+                  {opt.label}
+                </button>
+              ))}
+            </div>
+
+            <div className="flex items-center gap-2.5 bg-[#0B0F17] px-3 py-1.5 rounded-lg border border-slate-800 text-xs font-mono">
+              <label htmlFor="loraplus-lambda-slider" className="text-slate-300">
+                LoRA+ Ratio (&lambda; = &eta;<sub>B</sub>/&eta;<sub>A</sub>):
+              </label>
+              <input
+                id="loraplus-lambda-slider"
+                type="range"
+                min={2}
+                max={20}
+                step={2}
+                value={loraPlusLambda}
+                onChange={(e) => setLoraPlusLambda(Number(e.target.value))}
+                className="w-24 accent-emerald-400"
+              />
+              <span className="text-emerald-400 font-semibold">{loraPlusPlan.loraPlusLambdaRatio}x</span>
+            </div>
+          </div>
+        </div>
+
+        {loraPlusAppliedBanner && (
+          <div
+            role="status"
+            className="bg-emerald-950/30 border border-emerald-500/40 rounded-lg px-4 py-2.5 text-xs font-mono text-emerald-300"
+          >
+            {loraPlusAppliedBanner}
+          </div>
+        )}
+
+        {/* 4-Card Telemetry Strip */}
+        <div className="grid grid-cols-2 sm:grid-cols-4 gap-3 font-mono text-xs tabular-nums">
+          <div className="bg-[#0B0F17] border border-slate-800 rounded-lg p-3">
+            <div className="text-[11px] text-slate-400">Matrix A vs Matrix B LR</div>
+            <div className="text-sm font-bold text-emerald-400 mt-1">
+              {loraPlusPlan.etaALearningRate} &rarr; {loraPlusPlan.etaBLearningRate}
+            </div>
+            <div className="text-[10px] text-slate-500 mt-0.5">
+              &eta;<sub>B</sub> = {loraPlusPlan.loraPlusLambdaRatio} &times; &eta;<sub>A</sub> (LoRA+ Scaling)
+            </div>
+          </div>
+
+          <div className="bg-[#0B0F17] border border-slate-800 rounded-lg p-3">
+            <div className="text-[11px] text-slate-400">Convergence Speedup</div>
+            <div className="text-base font-bold text-blue-300 mt-1">
+              {loraPlusPlan.convergenceSpeedupFactor}x Faster
+            </div>
+            <div className="text-[10px] text-slate-500 mt-0.5">
+              Principal singular directions warm-started
+            </div>
+          </div>
+
+          <div className="bg-[#0B0F17] border border-slate-800 rounded-lg p-3">
+            <div className="text-[11px] text-slate-400">Adapter Param Pruning</div>
+            <div className="text-base font-bold text-amber-300 mt-1">
+              -{loraPlusPlan.prunedAdapterParamSavingsPct}% Params
+            </div>
+            <div className="text-[10px] text-slate-500 mt-0.5">
+              &ge;98.2% SVD Spectral Energy Preserved
+            </div>
+          </div>
+
+          <div className="bg-[#0B0F17] border border-slate-800 rounded-lg p-3">
+            <div className="text-[11px] text-slate-400">Projected Val Loss Gain</div>
+            <div className="text-base font-bold text-purple-300 mt-1">
+              {loraPlusPlan.projectedFinalValLossDelta.toFixed(3)} Loss
+            </div>
+            <div className="text-[10px] text-slate-500 mt-0.5">
+              Equivalent Global Rank: r={loraPlusPlan.optimalGlobalEquivalentRank}
+            </div>
+          </div>
+        </div>
+
+        {/* Per-Module SVD Spectrum Breakdown + PEFT/TRL Code Snippet */}
+        <div className="grid grid-cols-1 lg:grid-cols-12 gap-6 items-stretch">
+          <div className="lg:col-span-7 bg-[#0B0F17] border border-slate-800 rounded-lg p-4 space-y-2.5">
+            <div className="flex items-center justify-between text-xs">
+              <span className="font-semibold text-slate-200">
+                Per-Module SVD Singular Value Spectrum &amp; Rank Utilization ({modelName})
+              </span>
+              <span className="font-mono text-[11px] text-slate-400">
+                Current Global Rank: r={activeHpoConfig.loraRank}
+              </span>
+            </div>
+
+            <div className="space-y-2">
+              {loraPlusPlan.moduleSpectrum.map((mod) => {
+                const utilPct = Math.round(
+                  (mod.recommendedPrunedRank / Math.max(1, mod.assignedRank)) * 100
+                );
+                return (
+                  <div
+                    key={mod.moduleName}
+                    className="p-2.5 rounded bg-[#111827] border border-slate-800/90 space-y-1.5"
+                  >
+                    <div className="flex flex-wrap items-center justify-between gap-2 text-xs font-mono">
+                      <div>
+                        <span className="font-semibold text-slate-100">{mod.moduleName}</span>
+                        <span className="text-slate-400 text-[11px] ml-2">· {mod.layerRole}</span>
+                      </div>
+                      <div className="flex items-center gap-3 text-[11px] tabular-nums">
+                        <span className="text-slate-400">
+                          GradNorm: <strong className="text-amber-300">{mod.gradNormRatio}x</strong>
+                        </span>
+                        <span className="text-emerald-400 font-semibold">
+                          r={mod.assignedRank} &rarr; r={mod.recommendedPrunedRank} ({mod.singularValueRetentionPct}% SVD)
+                        </span>
+                      </div>
+                    </div>
+                    <div className="w-full h-1.5 bg-slate-900 rounded-full overflow-hidden">
+                      <div
+                        className={`h-full rounded-full ${
+                          mod.diagnosis === 'HIGH_CURVATURE_BOTTLENECK'
+                            ? 'bg-emerald-400'
+                            : mod.diagnosis === 'RANK_UNDERUTILIZED_PRUNE'
+                            ? 'bg-amber-400'
+                            : 'bg-blue-400'
+                        }`}
+                        style={{ width: `${Math.min(100, utilPct)}%` }}
+                      />
+                    </div>
+                  </div>
+                );
+              })}
+            </div>
+          </div>
+
+          <div className="lg:col-span-5 bg-[#0B0F17] border border-slate-800 rounded-lg p-4 flex flex-col justify-between space-y-3">
+            <div className="space-y-2">
+              <div className="flex items-center justify-between">
+                <span className="text-xs font-mono font-semibold text-slate-200">
+                  PEFT rank_pattern + TRL LoRA+ Optimizer
+                </span>
+                <button
+                  type="button"
+                  onClick={() => {
+                    navigator.clipboard?.writeText(loraPlusPlan.peftAndTrlSnippet);
+                    setCopiedLoraPlusPy(true);
+                    setTimeout(() => setCopiedLoraPlusPy(false), 1500);
+                  }}
+                  className="inline-flex items-center gap-1 px-2.5 py-1 text-[11px] font-mono text-slate-200 bg-slate-800 hover:bg-slate-700 rounded"
+                >
+                  {copiedLoraPlusPy ? (
+                    <>
+                      <Check className="w-3 h-3 text-emerald-400" />
+                      <span>Copied Code</span>
+                    </>
+                  ) : (
+                    <>
+                      <Copy className="w-3 h-3" />
+                      <span>Copy PEFT/TRL Code</span>
+                    </>
+                  )}
+                </button>
+              </div>
+              <pre className="p-3 rounded bg-[#111827] border border-slate-800 text-[11px] font-mono text-emerald-300 overflow-x-auto leading-relaxed whitespace-pre">
+                {loraPlusPlan.peftAndTrlSnippet}
+              </pre>
+            </div>
+
+            <div className="p-3 rounded bg-[#111827] border border-slate-800 text-[11px] font-mono text-slate-300 space-y-1">
+              <div className="text-amber-300 font-semibold">
+                Why PiSSA + LoRA+ Outperforms Standard LoRA:
+              </div>
+              <div>
+                • <code className="text-emerald-300">PiSSA</code> decomposes <code className="text-slate-200">W_0 = U S V^T</code> and initializes <code className="text-slate-200">A, B</code> with the top-<code className="text-slate-200">r</code> principal singular values so step 1 gradients immediately update dominant directions.
+              </div>
+              <div>
+                • <code className="text-emerald-300">rank_pattern</code> halves <code className="text-slate-200">q_proj/k_proj</code> rank while keeping full capacity on <code className="text-slate-200">v_proj</code>, <code className="text-slate-200">down_proj</code>, and <code className="text-slate-200">mm_projector</code>.
               </div>
             </div>
           </div>

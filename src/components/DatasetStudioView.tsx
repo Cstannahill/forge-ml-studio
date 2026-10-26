@@ -39,6 +39,7 @@ import {
 } from '../data/curatedDatasetBlends';
 import { InfoTooltip } from './InfoTooltip';
 import { HuggingFaceLivePreviewPanel } from './HuggingFaceLivePreviewPanel';
+import { CurriculumAndVlmAugmentationPanel } from './CurriculumAndVlmAugmentationPanel';
 
 export interface HfDatasetCatalogItem {
   id: string;
@@ -1656,6 +1657,27 @@ export const DatasetStudioView: React.FC<DatasetStudioViewProps> = ({
             newRows,
             `Ingested ${newRows.length} live-mapped rows from HuggingFace Hub (${datasetId}).`
           );
+        }}
+      />
+
+      {/* Multi-Stage Curriculum Learning & Difficulty Pacing Scheduler */}
+      <CurriculumAndVlmAugmentationPanel
+        modality="TEXT_LLM"
+        samples={samples.map((s) => ({
+          id: s.id,
+          instruction:
+            s.messages.find((m) => m.role === 'user')?.content ?? s.formattedPreview,
+          output:
+            s.messages.find((m) => m.role === 'assistant')?.content ?? s.formattedPreview,
+          domainTag: s.tags[0] ?? s.sourceDataset,
+          tokenEstimate: s.tokenEstimate,
+        }))}
+        onApplyCurriculumOrder={(orderedIds, msg) => {
+          const idRank = new Map(orderedIds.map((id, idx) => [id, idx]));
+          const reordered = [...samples].sort(
+            (a, b) => (idRank.get(a.id) ?? 999) - (idRank.get(b.id) ?? 999)
+          );
+          onReplaceSamples?.(reordered, msg);
         }}
       />
     </div>

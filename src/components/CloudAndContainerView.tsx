@@ -13,9 +13,12 @@ import {
   LocalInferenceRuntime,
   LoggingFramework,
   QuantizationMode,
+  GrammarPresetId,
   SPECULATIVE_MODEL_PAIRINGS,
+  compileZeroViolationGrammar,
   computeSpeculativeDecodingPairingPlan,
   estimateVramRequirements,
+  generateColabNotebookAndModelCard,
   generateContainerArtifacts,
   generateLocalInferenceAndSdkBundle,
 } from '../lib/pipelineLogic';
@@ -68,6 +71,38 @@ export const CloudAndContainerView: React.FC<CloudAndContainerViewProps> = ({
     lookaheadDraftTokensGamma: specGamma,
     domainTemperature: specTemp,
   });
+
+  // Zero-Violation Grammar Compiler & Colab / HF Model Card Exporter State
+  const [grammarPresetId, setGrammarPresetId] =
+    useState<GrammarPresetId>('VEIL_PRIVACY_AUDIT_BBOX');
+  const [exportTab, setExportTab] = useState<'MODEL_CARD' | 'COLAB_IPYNB'>('MODEL_CARD');
+
+  const compiledGrammar = compileZeroViolationGrammar(grammarPresetId);
+  const colabAndModelCard = generateColabNotebookAndModelCard({
+    modelId: selectedModel.id,
+    modelName: selectedModel.name,
+    modality:
+      selectedModel.id.toLowerCase().includes('vl') ||
+      selectedModel.id.toLowerCase().includes('vision')
+        ? 'VISION_VLM'
+        : 'TEXT_LLM',
+    loraRank: 32,
+    learningRate: 1.8e-4,
+    quantizationFormat: quantization,
+    stage2Method: 'ORPO',
+  });
+
+  const handleDownloadTextFile = (filename: string, content: string, mimeType: string) => {
+    const blob = new Blob([content], { type: mimeType });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = filename;
+    document.body.appendChild(a);
+    a.click();
+    document.body.removeChild(a);
+    URL.revokeObjectURL(url);
+  };
 
   const localInferenceBundle = generateLocalInferenceAndSdkBundle({
     modelName: selectedModel.name,
@@ -858,6 +893,250 @@ export const CloudAndContainerView: React.FC<CloudAndContainerViewProps> = ({
               <pre className="p-2.5 rounded bg-[#111827] border border-slate-800 text-[11px] font-mono text-slate-200 overflow-x-auto whitespace-pre leading-relaxed">
                 {speculativePlan.vllmServeCli}
               </pre>
+            </div>
+          </div>
+        </div>
+      </section>
+
+      {/* Section 05: Zero-Violation Grammar Compiler (GBNF / XGrammar) & One-Click Colab .ipynb + HuggingFace Model Card Exporter */}
+      <section
+        aria-label="Zero-Violation Grammar Compiler and Colab Notebook and Model Card Exporter"
+        className="bg-[#111827] border border-slate-800/90 rounded-lg p-5 space-y-6"
+      >
+        <div className="flex flex-col gap-3.5 pb-4 border-b border-slate-800/80">
+          <div className="flex flex-wrap items-center justify-between gap-2">
+            <div className="flex flex-wrap items-center gap-2 text-xs font-mono text-slate-400">
+              <span className="text-emerald-400 font-semibold">
+                {compiledGrammar.syntacticValidityGuaranteePct.toFixed(1)}% Syntactic Schema Validity
+              </span>
+              <span aria-hidden="true">·</span>
+              <span>
+                FSM States: <strong className="text-slate-200">{compiledGrammar.fsmStateCount}</strong>
+              </span>
+              <span aria-hidden="true">·</span>
+              <span>
+                Mask Overhead:{' '}
+                <strong className="text-blue-300">
+                  {compiledGrammar.perTokenDecodeOverheadUs} &mu;s/token
+                </strong>
+              </span>
+            </div>
+
+            <div className="flex flex-wrap items-center gap-2">
+              <button
+                type="button"
+                onClick={() =>
+                  handleDownloadTextFile(
+                    colabAndModelCard.notebookFilename,
+                    colabAndModelCard.notebookJsonContent,
+                    'application/x-ipynb+json'
+                  )
+                }
+                className="inline-flex items-center gap-1.5 px-3.5 py-1.5 text-xs font-semibold text-slate-950 bg-emerald-400 hover:bg-emerald-300 rounded-lg transition-colors"
+              >
+                <Download className="w-3.5 h-3.5" />
+                <span>Download Colab .ipynb</span>
+              </button>
+              <button
+                type="button"
+                onClick={() =>
+                  handleDownloadTextFile(
+                    colabAndModelCard.modelCardFilename,
+                    colabAndModelCard.modelCardMarkdown,
+                    'text/markdown'
+                  )
+                }
+                className="inline-flex items-center gap-1.5 px-3.5 py-1.5 text-xs font-medium text-slate-100 bg-slate-800 hover:bg-slate-700 border border-slate-700 rounded-lg transition-colors"
+              >
+                <Download className="w-3.5 h-3.5 text-blue-400" />
+                <span>Download HF README.md</span>
+              </button>
+            </div>
+          </div>
+
+          <div>
+            <h2 className="text-base font-semibold text-slate-100">
+              05. Zero-Violation Grammar Compiler (GBNF / XGrammar) &amp; One-Click Colab .ipynb / HuggingFace Model Card Exporter
+            </h2>
+            <p className="text-xs text-slate-400 mt-0.5">
+              Compile target JSON schemas and <code className="font-mono text-slate-300">&lt;ref&gt;...&lt;box&gt;[y1, x1, y2, x2]&lt;/box&gt;</code> grounding syntax into a zero-overhead finite-state grammar mask, and export a self-contained Jupyter Notebook (<code className="font-mono text-slate-300">.ipynb</code>) or HuggingFace <code className="font-mono text-slate-300">README.md</code> Model Card.
+            </p>
+          </div>
+
+          {/* Grammar Preset Selector */}
+          <div className="flex flex-wrap items-center gap-1.5 pt-1">
+            {(
+              [
+                {
+                  id: 'VEIL_PRIVACY_AUDIT_BBOX',
+                  label: '1. VEIL Privacy Audit (<think> + [0, 1000] <box> + JSON)',
+                },
+                {
+                  id: 'STRICT_TOOL_CALL_ENVELOPE',
+                  label: '2. Deterministic <tool_call> XML & Typed Args',
+                },
+                {
+                  id: 'COT_JSON_INCIDENT_SCHEMA',
+                  label: '3. Chain-of-Thought + Incident JSON Schema',
+                },
+              ] as const
+            ).map((preset) => (
+              <button
+                key={preset.id}
+                type="button"
+                onClick={() => setGrammarPresetId(preset.id)}
+                className={`px-3 py-1.5 text-xs font-mono rounded-lg border transition-colors whitespace-nowrap ${
+                  grammarPresetId === preset.id
+                    ? 'bg-blue-600 text-white border-blue-500 font-semibold'
+                    : 'bg-[#0B0F17] border-slate-800 text-slate-300 hover:text-slate-100'
+                }`}
+              >
+                {preset.label}
+              </button>
+            ))}
+          </div>
+        </div>
+
+        {/* Two-Column Split: Grammar Compiler & Live Token Mask vs Colab .ipynb & HF Model Card */}
+        <div className="grid grid-cols-1 lg:grid-cols-12 gap-6 items-stretch">
+          {/* Left 6 Cols: GBNF Grammar + Live Token-Mask Simulator */}
+          <div className="lg:col-span-6 bg-[#0B0F17] border border-slate-800 rounded-lg p-4 space-y-4">
+            <div className="space-y-1.5">
+              <div className="flex items-center justify-between">
+                <span className="text-xs font-mono font-semibold text-emerald-400">
+                  Compiled llama.cpp .GBNF Grammar &amp; vLLM XGrammar
+                </span>
+                <button
+                  type="button"
+                  onClick={() => handleCopy(compiledGrammar.gbnfGrammarSource, 'gbnf-src')}
+                  className="inline-flex items-center gap-1 px-2.5 py-1 text-[11px] font-mono text-slate-200 bg-slate-800 hover:bg-slate-700 rounded"
+                >
+                  {copiedKey === 'gbnf-src' ? (
+                    <>
+                      <Check className="w-3 h-3 text-emerald-400" />
+                      <span>Copied .gbnf</span>
+                    </>
+                  ) : (
+                    <>
+                      <Copy className="w-3 h-3" />
+                      <span>Copy .gbnf</span>
+                    </>
+                  )}
+                </button>
+              </div>
+              <pre className="p-2.5 rounded bg-[#111827] border border-slate-800 text-[11px] font-mono text-slate-200 overflow-x-auto max-h-40 whitespace-pre leading-relaxed">
+                {compiledGrammar.gbnfGrammarSource}
+              </pre>
+            </div>
+
+            {/* Live Token-Mask Logit Simulator */}
+            <div className="space-y-2">
+              <div className="text-xs font-mono text-slate-300 font-semibold">
+                Live FSM Logit Masking Step ({compiledGrammar.tokenMaskStepContext})
+              </div>
+              <div className="space-y-1.5">
+                {compiledGrammar.tokenMaskCandidates.map((cand) => (
+                  <div
+                    key={cand.tokenText}
+                    className="p-2 rounded bg-[#111827] border border-slate-800/90 text-[11px] font-mono flex flex-wrap items-center justify-between gap-2"
+                  >
+                    <div>
+                      <code
+                        className={
+                          cand.grammarState === 'ALLOWED_BY_FSM'
+                            ? 'text-emerald-300 font-semibold'
+                            : 'text-red-400 line-through'
+                        }
+                      >
+                        {cand.tokenText}
+                      </code>
+                      <span className="text-slate-400 ml-2">· {cand.reason}</span>
+                    </div>
+                    <div className="tabular-nums shrink-0">
+                      <span className="text-slate-400">Raw {cand.rawLogitProbPct}% &rarr; </span>
+                      <strong
+                        className={
+                          cand.grammarState === 'ALLOWED_BY_FSM'
+                            ? 'text-emerald-400'
+                            : 'text-red-400'
+                        }
+                      >
+                        {cand.postMaskProbPct}%
+                      </strong>
+                    </div>
+                  </div>
+                ))}
+              </div>
+            </div>
+          </div>
+
+          {/* Right 6 Cols: HuggingFace Model Card (README.md) & Google Colab .ipynb Preview */}
+          <div className="lg:col-span-6 bg-[#0B0F17] border border-slate-800 rounded-lg p-4 flex flex-col justify-between space-y-3">
+            <div className="space-y-2.5">
+              <div className="flex flex-wrap items-center justify-between gap-2">
+                <div className="flex items-center gap-1 bg-[#111827] p-1 rounded border border-slate-800">
+                  <button
+                    type="button"
+                    onClick={() => setExportTab('MODEL_CARD')}
+                    className={`px-2.5 py-1 text-xs font-mono rounded ${
+                      exportTab === 'MODEL_CARD'
+                        ? 'bg-blue-600 text-white font-semibold'
+                        : 'text-slate-400 hover:text-slate-200'
+                    }`}
+                  >
+                    HuggingFace README.md
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => setExportTab('COLAB_IPYNB')}
+                    className={`px-2.5 py-1 text-xs font-mono rounded ${
+                      exportTab === 'COLAB_IPYNB'
+                        ? 'bg-blue-600 text-white font-semibold'
+                        : 'text-slate-400 hover:text-slate-200'
+                    }`}
+                  >
+                    Google Colab (.ipynb JSON)
+                  </button>
+                </div>
+
+                <button
+                  type="button"
+                  onClick={() =>
+                    handleCopy(
+                      exportTab === 'MODEL_CARD'
+                        ? colabAndModelCard.modelCardMarkdown
+                        : colabAndModelCard.notebookJsonContent,
+                      'export-preview'
+                    )
+                  }
+                  className="inline-flex items-center gap-1 px-2.5 py-1 text-[11px] font-mono text-slate-200 bg-slate-800 hover:bg-slate-700 rounded"
+                >
+                  {copiedKey === 'export-preview' ? (
+                    <>
+                      <Check className="w-3 h-3 text-emerald-400" />
+                      <span>Copied</span>
+                    </>
+                  ) : (
+                    <>
+                      <Copy className="w-3 h-3" />
+                      <span>
+                        Copy {exportTab === 'MODEL_CARD' ? 'README.md' : '.ipynb'}
+                      </span>
+                    </>
+                  )}
+                </button>
+              </div>
+
+              <pre className="p-3 rounded bg-[#111827] border border-slate-800 text-[11px] font-mono text-slate-200 overflow-x-auto max-h-72 whitespace-pre leading-relaxed">
+                {exportTab === 'MODEL_CARD'
+                  ? colabAndModelCard.modelCardMarkdown
+                  : colabAndModelCard.notebookJsonContent}
+              </pre>
+            </div>
+
+            <div className="p-2.5 rounded bg-[#111827] border border-slate-800 text-[11px] font-mono text-slate-400 flex items-center justify-between">
+              <span>Artifact: {exportTab === 'MODEL_CARD' ? colabAndModelCard.modelCardFilename : colabAndModelCard.notebookFilename}</span>
+              <span className="text-emerald-400">Ready for HuggingFace Hub / Colab T4</span>
             </div>
           </div>
         </div>

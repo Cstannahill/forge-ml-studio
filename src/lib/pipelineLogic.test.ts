@@ -58,6 +58,12 @@ import {
   computeLayerWiseMixedPrecisionPlan,
   computeSpeculativeDecodingPairingPlan,
   SPECULATIVE_MODEL_PAIRINGS,
+  computeLoraPlusAndPissaSpectrumPlan,
+  computeCurriculumDifficultySchedule,
+  INITIAL_ABLATION_RUNS,
+  computeAblationMatrixSummary,
+  compileZeroViolationGrammar,
+  generateColabNotebookAndModelCard,
 } from './pipelineLogic.ts';
 import { CURATED_DATASET_BLENDS } from '../data/curatedDatasetBlends.ts';
 import { ML_GLOSSARY } from './glossaryData.ts';
@@ -1024,6 +1030,7 @@ import {
   computeVisionTileGridAndSeamSplits,
   appendBoundingBoxToVisionSample,
   evaluatePopeVisualHallucinationSuite,
+  computeSyntheticVlmAugmentationPreview,
 } from './visionPipelineLogic.ts';
 
 test('INITIAL_VISION_MODELS and CURATED_VISION_BLENDS include 6 multimodal models (including Gemma4 E2B & E4B) and 28 HuggingFace dataset blends including VEIL Privacy Hazard Auditing and Gemma4-VL suites', () => {
@@ -1630,6 +1637,115 @@ test('computeLayerWiseMixedPrecisionPlan and computeSpeculativeDecodingPairingPl
   assert.ok(specPlan.llamaCppServerCli.includes('--draft-max 6'));
   assert.ok(specPlan.vllmServeCli.includes('--speculative-model'));
 });
+
+test('computeLoraPlusAndPissaSpectrumPlan computes asymmetric A/B learning rates, SVD rank pruning savings, and PEFT rank_pattern code', () => {
+  const hybridPlan = computeLoraPlusAndPissaSpectrumPlan({
+    mode: 'PISSA_PLUS_HYBRID',
+    baseLearningRate: 0.0002,
+    loraRank: 32,
+    loraPlusLambdaRatio: 12,
+    modality: 'VISION_VLM',
+  });
+
+  assert.equal(hybridPlan.loraPlusLambdaRatio, 12);
+  assert.equal(hybridPlan.etaALearningRate, 0.0002);
+  assert.equal(hybridPlan.etaBLearningRate, 0.0024);
+  assert.ok(hybridPlan.convergenceSpeedupFactor > 2.0);
+  assert.ok(hybridPlan.projectedFinalValLossDelta < -0.08);
+  assert.equal(hybridPlan.moduleSpectrum.length, 8); // includes mm_projector for VISION_VLM
+  assert.ok(hybridPlan.prunedAdapterParamSavingsPct > 10);
+  assert.ok(hybridPlan.peftAndTrlSnippet.includes('pissa_niter_4'));
+  assert.ok(hybridPlan.peftAndTrlSnippet.includes('loraplus_lr_ratio=12.0'));
+});
+
+test('computeCurriculumDifficultySchedule and computeSyntheticVlmAugmentationPreview score Easy->Hard pacing and transform [0, 1000] VLM bounding boxes', () => {
+  const curriculum = computeCurriculumDifficultySchedule({
+    samples: [
+      {
+        id: 'hard-veil',
+        instruction: 'Adversarial POPE & VEIL multi-hazard audit scene',
+        output:
+          '<think>\nStep 1: check Rx\nStep 2: check envelope\nStep 3: check screen\n</think>\n<box>[10,10,50,50]</box><box>[60,60,90,90]</box>{"veil_category": "1"}',
+        domainTag: 'veil-audit',
+        tokenEstimate: 340,
+        boundingBoxCount: 3,
+      },
+      {
+        id: 'easy-sql',
+        instruction: 'Select user count.',
+        output: 'SELECT COUNT(*) FROM users;',
+        domainTag: 'sql',
+        tokenEstimate: 28,
+        boundingBoxCount: 0,
+      },
+    ],
+    totalSteps: 600,
+    strategy: 'ROOT_COMPETENCE_PACING',
+  });
+
+  assert.equal(curriculum.sortedSamples.length, 2);
+  assert.equal(curriculum.sortedSamples[0].id, 'easy-sql');
+  assert.equal(curriculum.sortedSamples[1].id, 'hard-veil');
+  assert.ok(
+    curriculum.sortedSamples[1].difficultyScore >
+      curriculum.sortedSamples[0].difficultyScore
+  );
+  assert.equal(curriculum.phases.length, 3);
+  assert.ok(curriculum.projectedAccuracyLiftPct > 3.0);
+
+  const veilSamples = buildVeilPrivacyAuditSeedSamples('GEMMA4_VL_PAN_SCAN');
+  const augReport = computeSyntheticVlmAugmentationPreview({
+    sample: veilSamples[0],
+    corruptionPreset: 'SPECULAR_GLARE_ID_RX',
+    rotationDeg: 10,
+    scaleCropFactor: 0.92,
+    horizontalFlip: true,
+  });
+
+  assert.equal(
+    augReport.transformedBoxes.length,
+    veilSamples[0].boundingBoxes.length
+  );
+  assert.ok(augReport.expectedRealWorldOcrRecallLiftPct > 10.0);
+  const firstBox = augReport.transformedBoxes[0];
+  assert.notDeepEqual(firstBox.transformedBox2d, firstBox.originalBox2d);
+  assert.ok(firstBox.unadjustedIoULossPct > 0);
+  assert.ok(augReport.albumentationsCodeSnippet.includes('A.HorizontalFlip'));
+});
+
+test('computeAblationMatrixSummary, compileZeroViolationGrammar, and generateColabNotebookAndModelCard verify Pareto runs, GBNF masks, and Colab/HF exports', () => {
+  assert.equal(INITIAL_ABLATION_RUNS.length, 3);
+  const ablationSummary = computeAblationMatrixSummary(INITIAL_ABLATION_RUNS);
+  assert.equal(ablationSummary.bestAccuracyRunId, 'ablation-run-3');
+  assert.equal(ablationSummary.lowestVramRunId, 'ablation-run-1');
+  assert.equal(ablationSummary.lowestLossRunId, 'ablation-run-3');
+  assert.ok(ablationSummary.executiveComparisonSummary.includes('Run #3'));
+
+  const veilGrammar = compileZeroViolationGrammar('VEIL_PRIVACY_AUDIT_BBOX');
+  assert.equal(veilGrammar.syntacticValidityGuaranteePct, 100.0);
+  assert.ok(veilGrammar.gbnfGrammarSource.includes('root ::= think-block'));
+  assert.ok(
+    veilGrammar.tokenMaskCandidates.some(
+      (c) => c.grammarState === 'MASKED_NEGATIVE_INFINITY' && c.postMaskProbPct === 0
+    )
+  );
+
+  const exported = generateColabNotebookAndModelCard({
+    modelId: 'google/gemma-4-e2b-vision-it',
+    modelName: 'Gemma-4-E2B-Vision-IT',
+    modality: 'VISION_VLM',
+    loraRank: 32,
+    learningRate: 0.00018,
+    quantizationFormat: 'Q4_K_M',
+    stage2Method: 'ORPO',
+  });
+  assert.equal(exported.notebookFilename, 'forgeml_gemma-4-e2b-vision-it_pipeline.ipynb');
+  const parsedNb = JSON.parse(exported.notebookJsonContent);
+  assert.equal(parsedNb.nbformat, 4);
+  assert.equal(parsedNb.cells.length, 4);
+  assert.ok(exported.modelCardMarkdown.includes('pipeline_tag: image-text-to-text'));
+});
+
 
 
 
