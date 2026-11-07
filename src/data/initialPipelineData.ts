@@ -52,7 +52,14 @@ export interface LogEntry {
   id: string;
   timestamp: string;
   level: 'INFO' | 'METRIC' | 'WARN' | 'ERROR';
-  component: 'TRAINER' | 'EVALUATOR' | 'DATA_PIPELINE' | 'HPO_OPTUNA' | 'AGENT_ORCHESTRATOR';
+  component:
+    | 'TRAINER'
+    | 'EVALUATOR'
+    | 'DATA_PIPELINE'
+    | 'HPO_OPTUNA'
+    | 'AGENT_ORCHESTRATOR'
+    | 'ORCHESTRATOR'
+    | 'EVAL_HARNESS';
   framework: LoggingFramework;
   message: string;
   metadata?: string;

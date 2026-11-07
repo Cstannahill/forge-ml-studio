@@ -64,6 +64,11 @@ import {
   computeAblationMatrixSummary,
   compileZeroViolationGrammar,
   generateColabNotebookAndModelCard,
+  DECISION_EVALUATOR_MODELS,
+  evaluateWithDecisionModelCascade,
+  runDatasetDecisionModelGatekeeper,
+  computeGrpoHybridDecisionRewardPlan,
+  simulateDecisionCascadeRouter,
 } from './pipelineLogic.ts';
 import { CURATED_DATASET_BLENDS } from '../data/curatedDatasetBlends.ts';
 import { ML_GLOSSARY } from './glossaryData.ts';
@@ -1745,6 +1750,93 @@ test('computeAblationMatrixSummary, compileZeroViolationGrammar, and generateCol
   assert.equal(parsedNb.cells.length, 4);
   assert.ok(exported.modelCardMarkdown.includes('pipeline_tag: image-text-to-text'));
 });
+
+test('4-Part Decision Model Suite: evaluateWithDecisionModelCascade, runDatasetDecisionModelGatekeeper, computeGrpoHybridDecisionRewardPlan, and simulateDecisionCascadeRouter work accurately', () => {
+  assert.equal(DECISION_EVALUATOR_MODELS.length, 3);
+
+  const cascadeEval = evaluateWithDecisionModelCascade({
+    evaluatorModelId: 'LiquidAI/LFM2.5-Decision-350M-Rubric',
+    targetModelId: 'Qwen/Qwen3.5-2B-Instruct',
+    targetModelName: 'Qwen3.5-2B-Instruct',
+    modality: 'TEXT_LLM',
+    enableStyleAndLengthDebiasing: true,
+    customTestCase: {
+      prompt: 'Extract status strictly from log.',
+      reference: '{"status": "OK"}',
+      response: '{"status": "OK", "extra_unverified_claim": "Probably caused by DNS"}',
+    },
+  });
+
+  assert.equal(cascadeEval.testCases.length, 4);
+  assert.ok(
+    cascadeEval.fineTunedSixAxes.factualCorrectness >
+      cascadeEval.baseSixAxes.factualCorrectness
+  );
+  assert.ok(
+    cascadeEval.fineTunedSixAxes.unsupportedStatementRisk <
+      cascadeEval.baseSixAxes.unsupportedStatementRisk
+  );
+  assert.equal(
+    cascadeEval.tier1CodeHandledPct +
+      cascadeEval.tier2DecisionAutoTriagedPct +
+      cascadeEval.tier3AmbiguousEscalatedPct,
+    100
+  );
+
+  const gatekeeper = runDatasetDecisionModelGatekeeper({
+    samples: [
+      {
+        id: 's1',
+        instruction: 'Extract invoice total.',
+        output: '<think>\nVerified against line items.\n</think>\n{"total": 120.50}',
+        domainTag: 'json-extraction',
+      },
+      {
+        id: 's2',
+        instruction: 'Summarize label.',
+        output: '{"label": "Rx 402"} Hope this helps! Probably takes 2 pills daily.',
+        domainTag: 'medical-ocr',
+      },
+    ],
+    maxUnsupportedRiskThresholdPct: 20,
+    minCompletenessThresholdPct: 75,
+  });
+
+  assert.equal(gatekeeper.auditedRows.length, 2);
+  assert.equal(gatekeeper.auditedRows[0].gatekeeperStatus, 'VERIFIED_CLEAN');
+  assert.equal(
+    gatekeeper.auditedRows[1].gatekeeperStatus,
+    'QUARANTINED_UNSUPPORTED_CLAIM'
+  );
+  assert.equal(gatekeeper.quarantinedCount, 1);
+
+  const grpoHybrid = computeGrpoHybridDecisionRewardPlan({
+    codeVerifierWeight: 0.55,
+    enableAntiRewardHackingPenalty: true,
+  });
+  assert.equal(grpoHybrid.codeVerifierWeight, 0.55);
+  assert.equal(grpoHybrid.decisionModelWeight, 0.45);
+  assert.equal(grpoHybrid.rollouts.length, 4);
+  assert.ok(
+    grpoHybrid.rollouts[0].finalHybridReward >
+      grpoHybrid.rollouts[1].finalHybridReward
+  );
+  assert.ok(grpoHybrid.rollouts[1].groupAdvantageZScore < 0);
+
+  const routerSim = simulateDecisionCascadeRouter({
+    localEdgeModelName: 'Qwen3.5-2B-Instruct',
+    passConfidenceThreshold: 0.82,
+    maxUnsupportedRiskThreshold: 0.15,
+  });
+  assert.equal(routerSim.routes.length, 3);
+  const totalShare = Number(
+    routerSim.routes.reduce((acc, r) => acc + r.trafficSharePct, 0).toFixed(1)
+  );
+  assert.equal(totalShare, 100.0);
+  assert.ok(routerSim.localOffloadRatePct > 70);
+  assert.ok(routerSim.routerPythonSnippet.includes('LOCAL_GBNF_RETRY'));
+});
+
 
 
 

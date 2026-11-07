@@ -15,6 +15,8 @@ export type VisionProjectorType =
 export type VisionTargetFormat =
   | 'QWEN_VL_CHATML'
   | 'GEMMA4_VL_PAN_SCAN'
+  | 'LFM_VL_NATIVE'
+  | 'LLAVA_CONVERSATION'
   | 'LLAVA_SHAREGPT4V'
   | 'OPENAI_VISION_MESSAGES';
 

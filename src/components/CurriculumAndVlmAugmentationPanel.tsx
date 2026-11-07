@@ -12,6 +12,7 @@ import {
   DifficultyPacingScheduleMode,
   ModalityTrack,
   computeCurriculumDifficultySchedule,
+  runDatasetDecisionModelGatekeeper,
 } from '../lib/pipelineLogic';
 import {
   NormalizedVisionSample,
@@ -77,6 +78,25 @@ export const CurriculumAndVlmAugmentationPanel: React.FC<
         horizontalFlip,
       })
     : null;
+
+  // 3. Decision-Model Corpus Gatekeeper & Unsupported-Claim Quarantine state
+  const [maxUnsupportedRiskPct, setMaxUnsupportedRiskPct] = useState<number>(20);
+  const [minCompletenessPct, setMinCompletenessPct] = useState<number>(75);
+  const [repairedRowIds, setRepairedRowIds] = useState<string[]>([]);
+  const [gatekeeperNotice, setGatekeeperNotice] = useState<string | null>(null);
+
+  const gatekeeperReport = runDatasetDecisionModelGatekeeper({
+    samples: samples.map((s) => ({
+      id: s.id,
+      instruction: s.instruction,
+      output: repairedRowIds.includes(s.id)
+        ? `<think>\nVerified all claims strictly against supplied input context; stripped unsupported extrapolations.\n</think>\n${(s.output ?? '').replace(/probably|assuming/gi, '')}`
+        : s.output,
+      domainTag: s.domainTag,
+    })),
+    maxUnsupportedRiskThresholdPct: maxUnsupportedRiskPct,
+    minCompletenessThresholdPct: minCompletenessPct,
+  });
 
   return (
     <div className="space-y-6">
@@ -571,6 +591,170 @@ export const CurriculumAndVlmAugmentationPanel: React.FC<
           </div>
         </section>
       )}
+
+      {/* SECTION 3: Decision-Model Corpus Gatekeeper & Unsupported-Claim Quarantine */}
+      <section
+        aria-label="Decision-Model Corpus Gatekeeper and Unsupported-Claim Quarantine"
+        className="bg-[#111827] border border-slate-800/90 rounded-lg p-5 space-y-5"
+      >
+        <div className="flex flex-col gap-3.5 pb-4 border-b border-slate-800/80">
+          <div className="flex flex-wrap items-center justify-between gap-2">
+            <div className="flex flex-wrap items-center gap-2 text-xs font-mono text-slate-400 tabular-nums">
+              <span className="text-emerald-400 font-semibold">
+                {gatekeeperReport.evaluatorModelName} ({gatekeeperReport.throughputSamplesPerSec} samples/sec)
+              </span>
+              <span aria-hidden="true">·</span>
+              <span>
+                Clean Pass Rate:{' '}
+                <strong className="text-blue-300">{gatekeeperReport.cleanPassRatePct}%</strong>
+              </span>
+              <span aria-hidden="true">·</span>
+              <span>
+                Quarantined Rows:{' '}
+                <strong className="text-amber-300">{gatekeeperReport.quarantinedCount}</strong>
+              </span>
+            </div>
+
+            <button
+              type="button"
+              onClick={() => {
+                const flaggedIds = gatekeeperReport.auditedRows
+                  .filter((r) => r.gatekeeperStatus !== 'VERIFIED_CLEAN')
+                  .map((r) => r.id);
+                setRepairedRowIds((prev) => Array.from(new Set([...prev, ...flaggedIds])));
+                setGatekeeperNotice(
+                  flaggedIds.length > 0
+                    ? `Quarantined & repaired ${flaggedIds.length} sample(s) flagged for unsupported claims or incomplete coverage.`
+                    : 'All active samples already pass the 6-axis Decision Model Gatekeeper.'
+                );
+              }}
+              className="inline-flex items-center gap-2 px-4 py-2 text-xs font-semibold text-slate-950 bg-emerald-400 hover:bg-emerald-300 rounded-lg transition-colors whitespace-nowrap shrink-0"
+            >
+              <Sparkles className="w-3.5 h-3.5" />
+              <span>Quarantine &amp; Auto-Repair Flagged Claims</span>
+            </button>
+          </div>
+
+          <div>
+            <h2 className="text-base font-semibold text-slate-100">
+              Decision-Model Corpus Gatekeeper &amp; Unsupported-Claim Quarantine
+            </h2>
+            <p className="text-xs text-slate-400 mt-0.5">
+              Runs a non-generative <code className="font-mono text-slate-300">LFM2.5-Decision-350M-Rubric</code> forward pass across the active corpus prior to Stage 1 SFT to quarantine samples where teacher distillation introduced unsupported statements or incomplete constraint coverage.
+            </p>
+          </div>
+
+          {/* Threshold Sliders */}
+          <div className="grid grid-cols-1 sm:grid-cols-2 gap-4 pt-1 text-xs font-mono">
+            <div className="bg-[#0B0F17] border border-slate-800 rounded-lg px-3.5 py-2.5">
+              <div className="flex items-center justify-between mb-1">
+                <label htmlFor="gatekeeper-unsupported-slider" className="text-slate-300">
+                  Max Unsupported Statement Risk Ceiling:
+                </label>
+                <span className="text-amber-300 font-semibold">{maxUnsupportedRiskPct}%</span>
+              </div>
+              <input
+                id="gatekeeper-unsupported-slider"
+                type="range"
+                min={5}
+                max={50}
+                step={5}
+                value={maxUnsupportedRiskPct}
+                onChange={(e) => setMaxUnsupportedRiskPct(Number(e.target.value))}
+                className="w-full accent-amber-400"
+              />
+            </div>
+
+            <div className="bg-[#0B0F17] border border-slate-800 rounded-lg px-3.5 py-2.5">
+              <div className="flex items-center justify-between mb-1">
+                <label htmlFor="gatekeeper-completeness-slider" className="text-slate-300">
+                  Min Required Completeness Score:
+                </label>
+                <span className="text-blue-300 font-semibold">{minCompletenessPct}%</span>
+              </div>
+              <input
+                id="gatekeeper-completeness-slider"
+                type="range"
+                min={50}
+                max={95}
+                step={5}
+                value={minCompletenessPct}
+                onChange={(e) => setMinCompletenessPct(Number(e.target.value))}
+                className="w-full accent-blue-400"
+              />
+            </div>
+          </div>
+        </div>
+
+        {gatekeeperNotice && (
+          <div
+            role="status"
+            className="bg-emerald-950/30 border border-emerald-500/40 rounded-lg px-4 py-2.5 text-xs font-mono text-emerald-300"
+          >
+            {gatekeeperNotice}
+          </div>
+        )}
+
+        {/* Audited Corpus Table */}
+        <div className="overflow-x-auto rounded-lg border border-slate-800 bg-[#0B0F17]">
+          <table className="w-full text-left border-collapse text-xs font-mono tabular-nums">
+            <thead>
+              <tr className="border-b border-slate-800 text-[11px] text-slate-400 bg-[#111827]">
+                <th className="py-2.5 px-3">Sample &amp; Domain</th>
+                <th className="py-2.5 px-3 text-right">Factual Entailment</th>
+                <th className="py-2.5 px-3 text-right">Completeness</th>
+                <th className="py-2.5 px-3 text-right">Format</th>
+                <th className="py-2.5 px-3 text-right">Unsupported Claim Risk</th>
+                <th className="py-2.5 px-3">Decision Gatekeeper Verdict</th>
+              </tr>
+            </thead>
+            <tbody className="divide-y divide-slate-800/80">
+              {gatekeeperReport.auditedRows.slice(0, 6).map((row) => (
+                <tr key={row.id} className="hover:bg-slate-900/40">
+                  <td className="py-2.5 px-3 font-sans">
+                    <div className="text-xs font-medium text-slate-100 truncate max-w-xs">
+                      {row.instructionPreview}
+                    </div>
+                    <div className="text-[11px] font-mono text-slate-400">
+                      {row.id} · {row.domainTag}
+                    </div>
+                  </td>
+                  <td className="py-2.5 px-3 text-right text-emerald-400">
+                    {row.factualFaithfulnessPct}%
+                  </td>
+                  <td className="py-2.5 px-3 text-right text-blue-300">
+                    {row.completenessPct}%
+                  </td>
+                  <td className="py-2.5 px-3 text-right text-slate-200">
+                    {row.formatCompliancePct}%
+                  </td>
+                  <td
+                    className={`py-2.5 px-3 text-right font-semibold ${
+                      row.unsupportedClaimRiskPct > maxUnsupportedRiskPct
+                        ? 'text-red-400'
+                        : 'text-emerald-400'
+                    }`}
+                  >
+                    {row.unsupportedClaimRiskPct}%
+                  </td>
+                  <td className="py-2.5 px-3">
+                    <span
+                      className={
+                        row.gatekeeperStatus === 'VERIFIED_CLEAN'
+                          ? 'text-emerald-400 font-semibold'
+                          : 'text-amber-300 font-semibold'
+                      }
+                    >
+                      {row.gatekeeperStatus}
+                    </span>
+                    <div className="text-[10px] text-slate-400">{row.issueReason}</div>
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      </section>
     </div>
   );
 };

@@ -19,6 +19,7 @@ import {
   TargetFormat,
   MixedPrecisionStrategy,
   AdapterInitAndLrMode,
+  computeGrpoHybridDecisionRewardPlan,
   computeLayerWiseMixedPrecisionPlan,
   computeLoraPlusAndPissaSpectrumPlan,
   computeSideBySideScriptDiff,
@@ -137,6 +138,16 @@ export const ConstraintSolverAndScriptDiffPanel: React.FC<
     loraRank: activeHpoConfig.loraRank,
     loraPlusLambdaRatio: loraPlusLambda,
     modality: isVlmModel ? 'VISION_VLM' : 'TEXT_LLM',
+  });
+
+  // 5. Stage 3 GRPO Hybrid Reward Mixer (Code Verifiers + Decision Model Semantic Head) State
+  const [grpoCodeWeight, setGrpoCodeWeight] = useState<number>(0.55);
+  const [enableAntiRewardHacking, setEnableAntiRewardHacking] = useState<boolean>(true);
+  const [copiedGrpoHybridPy, setCopiedGrpoHybridPy] = useState<boolean>(false);
+
+  const grpoHybridPlan = computeGrpoHybridDecisionRewardPlan({
+    codeVerifierWeight: grpoCodeWeight,
+    enableAntiRewardHackingPenalty: enableAntiRewardHacking,
   });
 
   // Build baseline untuned bundle for Mode 1 (CONFIG_DELTA)
@@ -1220,6 +1231,161 @@ sft_config = SFTConfig(
               <div>
                 • <code className="text-emerald-300">rank_pattern</code> halves <code className="text-slate-200">q_proj/k_proj</code> rank while keeping full capacity on <code className="text-slate-200">v_proj</code>, <code className="text-slate-200">down_proj</code>, and <code className="text-slate-200">mm_projector</code>.
               </div>
+            </div>
+          </div>
+        </div>
+      </section>
+
+      {/* PART E: Stage 3 GRPO Hybrid Reward Mixer (Deterministic Code Verifiers + Decision Model Semantic Head) */}
+      <section
+        aria-label="Stage 3 GRPO Hybrid Reward Mixer"
+        className="bg-[#111827] border border-slate-800/90 rounded-lg p-5 space-y-5"
+      >
+        <div className="flex flex-col gap-3.5 pb-4 border-b border-slate-800/80">
+          <div className="flex flex-wrap items-center justify-between gap-2">
+            <div className="flex flex-wrap items-center gap-2 text-xs font-mono text-slate-400 tabular-nums">
+              <span className="text-emerald-400 font-semibold">
+                {grpoHybridPlan.rewardHackingSuppressionPct}% Reward-Hacking Suppression
+              </span>
+              <span aria-hidden="true">·</span>
+              <span>
+                8-Rollout Batch Latency:{' '}
+                <strong className="text-blue-300">
+                  {grpoHybridPlan.batchScoringLatencyMsFor8Rollouts} ms
+                </strong>
+              </span>
+              <span aria-hidden="true">·</span>
+              <span>
+                Weights:{' '}
+                <strong className="text-slate-200">
+                  w_code={grpoHybridPlan.codeVerifierWeight} / w_decision={grpoHybridPlan.decisionModelWeight}
+                </strong>
+              </span>
+            </div>
+
+            <label className="inline-flex items-center gap-2 px-3 py-1.5 rounded-lg bg-[#0B0F17] border border-slate-800 text-xs font-mono text-slate-200 cursor-pointer">
+              <input
+                type="checkbox"
+                checked={enableAntiRewardHacking}
+                onChange={(e) => setEnableAntiRewardHacking(e.target.checked)}
+                className="rounded border-slate-700 bg-slate-900 text-emerald-500"
+              />
+              <span>Penalize Unsupported &lt;think&gt; Claims (-0.45 &times; p_unsupported)</span>
+            </label>
+          </div>
+
+          <div>
+            <h2 className="text-base font-semibold text-slate-100">
+              05. Stage 3 GRPO Hybrid Reward Mixer (Deterministic Code Verifiers + Decision Model Semantic Head)
+            </h2>
+            <p className="text-xs text-slate-400 mt-0.5">
+              Prevents GRPO reward hacking (where a rollout emits valid JSON/SQL syntax to score <code className="font-mono text-slate-300">1.0</code> on code tests while hallucinating ungrounded facts inside <code className="font-mono text-slate-300">&lt;think&gt;</code>) by blending deterministic code verifiers with a fast 14ms Decision Model semantic head.
+            </p>
+          </div>
+
+          {/* Interactive Code vs Decision Weight Slider */}
+          <div className="bg-[#0B0F17] border border-slate-800 rounded-lg px-4 py-3 flex flex-col sm:flex-row sm:items-center justify-between gap-4 text-xs font-mono">
+            <div className="space-y-0.5">
+              <label htmlFor="grpo-hybrid-weight-slider" className="text-slate-200 font-semibold block">
+                Hybrid Reward Balance: Code Verifier ({Math.round(grpoHybridPlan.codeVerifierWeight * 100)}%) vs. Decision Model Semantic Head ({Math.round(grpoHybridPlan.decisionModelWeight * 100)}%)
+              </label>
+              <span className="text-[11px] text-slate-400">
+                R_total = {grpoHybridPlan.codeVerifierWeight} &times; R_code_ast + {grpoHybridPlan.decisionModelWeight} &times; P_decision_rubric - P_unsupported_claim
+              </span>
+            </div>
+            <input
+              id="grpo-hybrid-weight-slider"
+              type="range"
+              min={0.2}
+              max={0.8}
+              step={0.05}
+              value={grpoCodeWeight}
+              onChange={(e) => setGrpoCodeWeight(Number(e.target.value))}
+              className="w-full sm:w-56 accent-emerald-400 shrink-0"
+            />
+          </div>
+        </div>
+
+        {/* Rollout Advantage Matrix + TRL Hybrid Reward Code */}
+        <div className="grid grid-cols-1 lg:grid-cols-12 gap-6 items-stretch">
+          <div className="lg:col-span-7 bg-[#0B0F17] border border-slate-800 rounded-lg p-4 space-y-2.5">
+            <div className="text-xs font-semibold text-slate-200">
+              Live GRPO Group Rollout Advantage Scoring (G=4 Sampled Rollouts)
+            </div>
+            <div className="space-y-2">
+              {grpoHybridPlan.rollouts.map((r) => (
+                <div
+                  key={r.rolloutId}
+                  className="p-2.5 rounded bg-[#111827] border border-slate-800/90 space-y-1.5 text-xs font-mono tabular-nums"
+                >
+                  <div className="flex flex-wrap items-center justify-between gap-2">
+                    <span
+                      className={`font-semibold ${
+                        r.rewardHackingCaught ? 'text-amber-300' : 'text-slate-100'
+                      }`}
+                    >
+                      {r.label}
+                    </span>
+                    <span
+                      className={`font-semibold ${
+                        r.groupAdvantageZScore > 0 ? 'text-emerald-400' : 'text-red-400'
+                      }`}
+                    >
+                      R={r.finalHybridReward.toFixed(2)} (Advantage A_i ={' '}
+                      {r.groupAdvantageZScore >= 0 ? '+' : ''}
+                      {r.groupAdvantageZScore}σ)
+                    </span>
+                  </div>
+                  <div className="text-[11px] text-slate-400 truncate">{r.responsePreview}</div>
+                  <div className="flex flex-wrap items-center gap-3 text-[11px] text-slate-300">
+                    <span>Code Verifier: {r.codeVerifierScore.toFixed(2)}</span>
+                    <span aria-hidden="true">·</span>
+                    <span>Decision Rubric: {r.decisionSemanticScore.toFixed(2)}</span>
+                    <span aria-hidden="true">·</span>
+                    <span className={r.unsupportedClaimPenalty > 0.1 ? 'text-red-400' : 'text-slate-400'}>
+                      Unsupported Penalty: -{r.unsupportedClaimPenalty.toFixed(2)}
+                    </span>
+                  </div>
+                </div>
+              ))}
+            </div>
+          </div>
+
+          <div className="lg:col-span-5 bg-[#0B0F17] border border-slate-800 rounded-lg p-4 flex flex-col justify-between space-y-3">
+            <div className="space-y-2">
+              <div className="flex items-center justify-between">
+                <span className="text-xs font-mono font-semibold text-slate-200">
+                  TRL GRPOTrainer Hybrid Decision Reward Function
+                </span>
+                <button
+                  type="button"
+                  onClick={() => {
+                    navigator.clipboard?.writeText(grpoHybridPlan.trlGrpoHybridRewardSnippet);
+                    setCopiedGrpoHybridPy(true);
+                    setTimeout(() => setCopiedGrpoHybridPy(false), 1500);
+                  }}
+                  className="inline-flex items-center gap-1 px-2.5 py-1 text-[11px] font-mono text-slate-200 bg-slate-800 hover:bg-slate-700 rounded"
+                >
+                  {copiedGrpoHybridPy ? (
+                    <>
+                      <Check className="w-3 h-3 text-emerald-400" />
+                      <span>Copied</span>
+                    </>
+                  ) : (
+                    <>
+                      <Copy className="w-3 h-3" />
+                      <span>Copy Reward Code</span>
+                    </>
+                  )}
+                </button>
+              </div>
+              <pre className="p-3 rounded bg-[#111827] border border-slate-800 text-[11px] font-mono text-emerald-300 overflow-x-auto leading-relaxed whitespace-pre">
+                {grpoHybridPlan.trlGrpoHybridRewardSnippet}
+              </pre>
+            </div>
+
+            <div className="p-3 rounded bg-[#111827] border border-slate-800 text-[11px] font-mono text-slate-300">
+              Notice how <strong className="text-amber-300">Rollout #2</strong> scores <code className="text-emerald-300">1.00</code> on pure JSON syntax, but the Decision Model catches its hallucinated passport claim and flips its GRPO advantage negative (<code className="text-red-400">{grpoHybridPlan.rollouts[1]?.groupAdvantageZScore}σ</code>).
             </div>
           </div>
         </div>

@@ -31,6 +31,7 @@ import {
 import { VeilVisionRedactionCanvas } from './VeilVisionRedactionCanvas';
 import { PopeAndHardNegativeMinerPanel } from './PopeAndHardNegativeMinerPanel';
 import { MultiRunAblationMatrixPanel } from './MultiRunAblationMatrixPanel';
+import { DecisionModelEvaluatorTriagePanel } from './DecisionModelEvaluatorTriagePanel';
 import {
   ArchitectureFamily,
   PlainLanguageComparison,
@@ -1619,6 +1620,24 @@ export const ModelBenchmarksView: React.FC<ModelBenchmarksViewProps> = ({
           } else {
             onSelectModel(restoredId);
           }
+        }}
+      />
+
+      {/* Section 06D: 3-Tier Decision Model Evaluator & 6-Axis Rubric Triage Matrix */}
+      <DecisionModelEvaluatorTriagePanel
+        modality={pipelineTrack}
+        targetModelId={
+          pipelineTrack === 'VISION_VLM'
+            ? vlmDashboard.selectedModel.id
+            : selectedModel.id
+        }
+        targetModelName={
+          pipelineTrack === 'VISION_VLM'
+            ? vlmDashboard.selectedModel.name
+            : selectedModel.name
+        }
+        onSendCaseToDatasetStudio={(draft) => {
+          onSendFlaggedPromptToDatasetStudio?.(draft);
         }}
       />
 

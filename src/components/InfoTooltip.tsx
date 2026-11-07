@@ -3,20 +3,22 @@ import { HelpCircle } from 'lucide-react';
 import { ML_GLOSSARY } from '../lib/glossaryData';
 
 interface InfoTooltipProps {
-  termKey: keyof typeof ML_GLOSSARY | string;
+  termKey?: keyof typeof ML_GLOSSARY | string;
+  glossaryKey?: keyof typeof ML_GLOSSARY | string;
   customLabel?: string;
   align?: 'left' | 'center' | 'right';
 }
 
 export const InfoTooltip: React.FC<InfoTooltipProps> = ({
   termKey,
+  glossaryKey,
   customLabel,
   align = 'center',
 }) => {
   const [hovered, setHovered] = useState(false);
   const [pinned, setPinned] = useState(false);
   const containerRef = useRef<HTMLSpanElement>(null);
-  const entry = ML_GLOSSARY[termKey];
+  const entry = ML_GLOSSARY[termKey ?? glossaryKey ?? ''];
 
   useEffect(() => {
     if (!pinned) return;

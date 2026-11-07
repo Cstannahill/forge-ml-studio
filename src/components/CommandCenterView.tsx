@@ -633,7 +633,7 @@ export const CommandCenterView: React.FC<CommandCenterViewProps> = ({
 
   const handleMergeAndDownloadSafetensors = () => {
     const binaryBytes = createSafetensorsBinaryArtifact(safetensorsPlan.safetensorsHeaderJson);
-    const blob = new Blob([binaryBytes], { type: 'application/octet-stream' });
+    const blob = new Blob([binaryBytes as unknown as BlobPart], { type: 'application/octet-stream' });
     const url = URL.createObjectURL(blob);
     const a = document.createElement('a');
     a.href = url;

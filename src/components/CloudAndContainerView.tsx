@@ -21,6 +21,7 @@ import {
   generateColabNotebookAndModelCard,
   generateContainerArtifacts,
   generateLocalInferenceAndSdkBundle,
+  simulateDecisionCascadeRouter,
 } from '../lib/pipelineLogic';
 import {
   CLOUD_PROVIDER_GUIDES,
@@ -90,6 +91,16 @@ export const CloudAndContainerView: React.FC<CloudAndContainerViewProps> = ({
     learningRate: 1.8e-4,
     quantizationFormat: quantization,
     stage2Method: 'ORPO',
+  });
+
+  // Edge-to-Cloud Decision Cascade Router Simulator State
+  const [cascadePassThreshold, setCascadePassThreshold] = useState<number>(0.82);
+  const [cascadeMaxUnsupportedRisk, setCascadeMaxUnsupportedRisk] = useState<number>(0.15);
+
+  const cascadeReport = simulateDecisionCascadeRouter({
+    localEdgeModelName: selectedModel.name,
+    passConfidenceThreshold: cascadePassThreshold,
+    maxUnsupportedRiskThreshold: cascadeMaxUnsupportedRisk,
   });
 
   const handleDownloadTextFile = (filename: string, content: string, mimeType: string) => {
@@ -1137,6 +1148,168 @@ export const CloudAndContainerView: React.FC<CloudAndContainerViewProps> = ({
             <div className="p-2.5 rounded bg-[#111827] border border-slate-800 text-[11px] font-mono text-slate-400 flex items-center justify-between">
               <span>Artifact: {exportTab === 'MODEL_CARD' ? colabAndModelCard.modelCardFilename : colabAndModelCard.notebookFilename}</span>
               <span className="text-emerald-400">Ready for HuggingFace Hub / Colab T4</span>
+            </div>
+          </div>
+        </div>
+      </section>
+
+      {/* Section 06: Edge-to-Cloud Decision Cascade Router Simulator */}
+      <section
+        aria-label="Edge-to-Cloud Decision Cascade Router Simulator"
+        className="bg-[#111827] border border-slate-800/90 rounded-lg p-5 space-y-5"
+      >
+        <div className="flex flex-col gap-3.5 pb-4 border-b border-slate-800/80">
+          <div className="flex flex-wrap items-center justify-between gap-2 text-xs font-mono text-slate-400 tabular-nums">
+            <div className="flex flex-wrap items-center gap-2">
+              <span className="text-emerald-400 font-semibold">
+                {cascadeReport.localOffloadRatePct}% Local Edge Offload
+              </span>
+              <span aria-hidden="true">·</span>
+              <span>
+                Blended p95 Latency:{' '}
+                <strong className="text-blue-300">{cascadeReport.blendedP95LatencyMs} ms</strong>
+              </span>
+              <span aria-hidden="true">·</span>
+              <span>
+                Cloud API Savings:{' '}
+                <strong className="text-amber-300">-{cascadeReport.cloudCostSavingsPct}%</strong>
+              </span>
+              <span aria-hidden="true">·</span>
+              <span>
+                Verified Accuracy:{' '}
+                <strong className="text-slate-100">{cascadeReport.endToEndVerifiedAccuracyPct}%</strong>
+              </span>
+            </div>
+            <span className="text-slate-300">
+              Gatekeeper: {cascadeReport.decisionGateModelName} (5.8 ms)
+            </span>
+          </div>
+
+          <div>
+            <h2 className="text-base font-semibold text-slate-100">
+              06. Edge-to-Cloud Decision Cascade Router Simulator (Local Sub-2B + Decision Gate + Cloud Teacher Fallback)
+            </h2>
+            <p className="text-xs text-slate-400 mt-0.5">
+              Places a 5.8ms non-generative Decision Model gatekeeper in front of your fine-tuned local checkpoint (<strong className="text-slate-200">{cascadeReport.localEdgeModelName}</strong>) to accept high-confidence responses locally, re-decode syntax errors with GBNF grammar masks, and escalate only ambiguous or high-risk prompts to a 27B/72B cloud teacher.
+            </p>
+          </div>
+
+          {/* Threshold Sliders */}
+          <div className="grid grid-cols-1 sm:grid-cols-2 gap-4 pt-1 text-xs font-mono tabular-nums">
+            <div className="bg-[#0B0F17] border border-slate-800 rounded-lg px-3.5 py-2.5">
+              <div className="flex items-center justify-between mb-1">
+                <label htmlFor="cascade-pass-slider" className="text-slate-300">
+                  Minimum Local Accept Confidence (&tau;<sub>pass</sub>):
+                </label>
+                <span className="text-emerald-400 font-semibold">
+                  {cascadePassThreshold.toFixed(2)}
+                </span>
+              </div>
+              <input
+                id="cascade-pass-slider"
+                type="range"
+                min={0.65}
+                max={0.95}
+                step={0.03}
+                value={cascadePassThreshold}
+                onChange={(e) => setCascadePassThreshold(Number(e.target.value))}
+                className="w-full accent-emerald-400"
+              />
+            </div>
+
+            <div className="bg-[#0B0F17] border border-slate-800 rounded-lg px-3.5 py-2.5">
+              <div className="flex items-center justify-between mb-1">
+                <label htmlFor="cascade-unsupported-slider" className="text-slate-300">
+                  Max Allowed Unsupported Claim Risk (&tau;<sub>unsupported</sub>):
+                </label>
+                <span className="text-amber-300 font-semibold">
+                  {Math.round(cascadeMaxUnsupportedRisk * 100)}%
+                </span>
+              </div>
+              <input
+                id="cascade-unsupported-slider"
+                type="range"
+                min={0.05}
+                max={0.35}
+                step={0.05}
+                value={cascadeMaxUnsupportedRisk}
+                onChange={(e) => setCascadeMaxUnsupportedRisk(Number(e.target.value))}
+                className="w-full accent-amber-400"
+              />
+            </div>
+          </div>
+        </div>
+
+        {/* 3-Route Breakdown + Python Router Snippet */}
+        <div className="grid grid-cols-1 lg:grid-cols-12 gap-6 items-stretch">
+          <div className="lg:col-span-7 bg-[#0B0F17] border border-slate-800 rounded-lg p-4 space-y-3">
+            <div className="text-xs font-semibold text-slate-200">
+              3-Route Production Traffic Cascade Distribution
+            </div>
+            <div className="space-y-2.5">
+              {cascadeReport.routes.map((route) => (
+                <div
+                  key={route.routeId}
+                  className="p-3 rounded bg-[#111827] border border-slate-800/90 space-y-1.5 text-xs font-mono tabular-nums"
+                >
+                  <div className="flex flex-wrap items-center justify-between gap-2">
+                    <span className="font-semibold text-slate-100">{route.title}</span>
+                    <div className="flex items-center gap-3">
+                      <span className="text-slate-400">{route.meanLatencyMs} ms</span>
+                      <span className="text-emerald-400 font-bold">
+                        {route.trafficSharePct}% Traffic
+                      </span>
+                    </div>
+                  </div>
+                  <div className="text-[11px] text-slate-400">{route.triggerCondition}</div>
+                  <div className="w-full h-1.5 bg-slate-900 rounded-full overflow-hidden">
+                    <div
+                      className={`h-full rounded-full ${
+                        route.routeId === 'ROUTE_1_LOCAL_FAST_ACCEPT'
+                          ? 'bg-emerald-400'
+                          : route.routeId === 'ROUTE_2_LOCAL_GBNF_GRAMMAR_RETRY'
+                          ? 'bg-blue-400'
+                          : 'bg-amber-400'
+                      }`}
+                      style={{ width: `${Math.min(100, route.trafficSharePct)}%` }}
+                    />
+                  </div>
+                </div>
+              ))}
+            </div>
+          </div>
+
+          <div className="lg:col-span-5 bg-[#0B0F17] border border-slate-800 rounded-lg p-4 flex flex-col justify-between space-y-3">
+            <div className="space-y-2">
+              <div className="flex items-center justify-between">
+                <span className="text-xs font-mono font-semibold text-slate-200">
+                  Python Edge-to-Cloud Decision Router
+                </span>
+                <button
+                  type="button"
+                  onClick={() => handleCopy(cascadeReport.routerPythonSnippet, 'cascade-router-py')}
+                  className="inline-flex items-center gap-1 px-2.5 py-1 text-[11px] font-mono text-slate-200 bg-slate-800 hover:bg-slate-700 rounded"
+                >
+                  {copiedKey === 'cascade-router-py' ? (
+                    <>
+                      <Check className="w-3 h-3 text-emerald-400" />
+                      <span>Copied</span>
+                    </>
+                  ) : (
+                    <>
+                      <Copy className="w-3 h-3" />
+                      <span>Copy Router Python</span>
+                    </>
+                  )}
+                </button>
+              </div>
+              <pre className="p-3 rounded bg-[#111827] border border-slate-800 text-[11px] font-mono text-emerald-300 overflow-x-auto leading-relaxed whitespace-pre">
+                {cascadeReport.routerPythonSnippet}
+              </pre>
+            </div>
+
+            <div className="p-2.5 rounded bg-[#111827] border border-slate-800 text-[11px] font-mono text-slate-400">
+              Separating syntax failures (Route 2 local GBNF retry) from semantic uncertainty (Route 3 teacher escalation) cuts cloud API spend by {cascadeReport.cloudCostSavingsPct}%.
             </div>
           </div>
         </div>

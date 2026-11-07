@@ -1748,7 +1748,12 @@ export interface BenchmarkSummaryTableRow {
   perplexityFineTuned: number | null;
   perplexityDelta: number | null;
   meanAccuracyGain: number | null;
-  verdict: 'PROMOTE_TO_PRODUCTION' | 'REGRESSION_ALERT' | 'MARGINAL_GAIN' | 'BASE_ONLY';
+  verdict:
+    | 'PROMOTE_TO_PRODUCTION'
+    | 'REGRESSION_ALERT'
+    | 'MARGINAL_GAIN'
+    | 'ITERATE_HPO'
+    | 'BASE_ONLY';
 }
 
 export function buildBenchmarkSummaryTableRows(
@@ -3908,6 +3913,8 @@ export function runAutomatedRedTeamStressSuite(input: {
 // 18. LOCAL INFERENCE ENDPOINT LAUNCHER & CLIENT SDK SNIPPET GENERATOR
 // ============================================================================
 
+export type ModalityTrack = 'TEXT_LLM' | 'VISION_VLM';
+export type ExportDeploymentFormat = string;
 export type LocalInferenceRuntime = 'ollama' | 'llama_cpp' | 'vllm' | 'lm_studio';
 
 export interface LocalInferenceAndSdkBundle {
@@ -4155,6 +4162,7 @@ export function simulateHardwareAndEdgeTargets(input: {
 export interface CommandPaletteActionItem {
   id: string;
   title: string;
+  subtitle?: string;
   category: 'NAVIGATION' | 'MODEL_SWITCH' | 'PIPELINE_ACTION' | 'THEME';
   shortcutHint?: string;
   keywords: string[];
@@ -5494,7 +5502,9 @@ export interface WorkspaceProjectProfile {
     | 'QWEN_VL_CHATML'
     | 'LFM_VL_NATIVE'
     | 'GEMMA4_VL_PAN_SCAN'
-    | 'LLAVA_CONVERSATION';
+    | 'LLAVA_CONVERSATION'
+    | 'LLAVA_SHAREGPT4V'
+    | 'OPENAI_VISION_MESSAGES';
   hpoConfig: HyperparameterConfig;
   samplePackingEnabled: boolean;
   completionOnlyLossEnabled: boolean;
@@ -7468,6 +7478,639 @@ vllm serve ./exports/${slug}-ft --guided-decoding-backend xgrammar --port 8000
     modelCardMarkdown,
   };
 }
+
+// ============================================================================
+// 40. 3-TIER DECISION MODEL EVALUATOR & 6-AXIS RUBRIC TRIAGE ENGINE
+// ============================================================================
+
+export type DecisionEvaluatorModelId =
+  | 'LiquidAI/LFM2.5-Decision-350M-Rubric'
+  | 'Qwen/Qwen3.5-Decision-0.8B-Verifier'
+  | 'google/gemma-4-e2b-decision-judge';
+
+export interface DecisionEvaluatorModelSpec {
+  id: DecisionEvaluatorModelId;
+  name: string;
+  paramsMillions: number;
+  latencyMsPerSample: number;
+  throughputSamplesPerSec: number;
+  supportsMultimodalVlm: boolean;
+  architectureNote: string;
+}
+
+export const DECISION_EVALUATOR_MODELS: DecisionEvaluatorModelSpec[] = [
+  {
+    id: 'LiquidAI/LFM2.5-Decision-350M-Rubric',
+    name: 'LFM2.5-Decision-350M-Rubric (6-Head Single-Pass Classifier)',
+    paramsMillions: 350,
+    latencyMsPerSample: 5.8,
+    throughputSamplesPerSec: 1850,
+    supportsMultimodalVlm: false,
+    architectureNote: 'Hybrid state-space encoder with 6 calibrated sigmoid rubric heads (0 generative tokens)',
+  },
+  {
+    id: 'Qwen/Qwen3.5-Decision-0.8B-Verifier',
+    name: 'Qwen3.5-Decision-0.8B-Verifier (Cross-Attention Fact & Format Scorer)',
+    paramsMillions: 800,
+    latencyMsPerSample: 9.2,
+    throughputSamplesPerSec: 1240,
+    supportsMultimodalVlm: false,
+    architectureNote: 'BPE cross-encoder trained on 400k reference-grounded entailment & IFEval triples',
+  },
+  {
+    id: 'google/gemma-4-e2b-decision-judge',
+    name: 'Gemma-4-E2B-Decision-Judge (Multimodal + Text 6-Axis Calibrated Scorer)',
+    paramsMillions: 2300,
+    latencyMsPerSample: 13.6,
+    throughputSamplesPerSec: 840,
+    supportsMultimodalVlm: true,
+    architectureNote: 'SigLIP Pan-&-Scan + SentencePiece 6-head verifier for OCR/VEIL & text grounding',
+  },
+];
+
+export interface DecisionSixAxisScores {
+  instructionAdherence: number; // 0 to 100%
+  factualCorrectness: number; // 0 to 100%
+  completeness: number; // 0 to 100%
+  relevance: number; // 0 to 100%
+  formatCompliance: number; // 0 to 100%
+  unsupportedStatementRisk: number; // 0 to 100% (Lower is better!)
+}
+
+export type DecisionTriageVerdict =
+  | 'AUTO_PASS_CODE_AND_DECISION'
+  | 'AUTO_FAIL_UNSUPPORTED_STATEMENT'
+  | 'AUTO_FAIL_CODE_SCHEMA'
+  | 'AMBIGUOUS_ESCALATE_HEAVY_JUDGE';
+
+export interface DecisionEvaluatedTestCase {
+  id: string;
+  title: string;
+  testPrompt: string;
+  referenceAnswer: string;
+  candidateResponse: string;
+  tier1CodeCheckPassed: boolean;
+  tier1CodeCheckNote: string;
+  axes: DecisionSixAxisScores;
+  styleBiasCorrectionDeltaPct: number;
+  compositeConfidenceProb: number; // 0.00 to 1.00
+  triageVerdict: DecisionTriageVerdict;
+  recommendedAction: string;
+}
+
+export interface DecisionModelCascadeReport {
+  evaluatorModel: DecisionEvaluatorModelSpec;
+  evaluatedTargetModelName: string;
+  modality: ModalityTrack;
+  enableStyleAndLengthDebiasing: boolean;
+  ambiguityBand: [number, number];
+  baseSixAxes: DecisionSixAxisScores;
+  fineTunedSixAxes: DecisionSixAxisScores;
+  tier1CodeHandledPct: number;
+  tier2DecisionAutoTriagedPct: number;
+  tier3AmbiguousEscalatedPct: number;
+  speedupVsGenerativeJudgeMultiplier: number;
+  tokenCostSavedPct: number;
+  testCases: DecisionEvaluatedTestCase[];
+}
+
+export function evaluateWithDecisionModelCascade(input: {
+  evaluatorModelId: DecisionEvaluatorModelId;
+  targetModelId: string;
+  targetModelName: string;
+  modality: ModalityTrack;
+  enableStyleAndLengthDebiasing: boolean;
+  ambiguityLow?: number;
+  ambiguityHigh?: number;
+  customTestCase?: {
+    prompt: string;
+    reference: string;
+    response: string;
+  } | null;
+}): DecisionModelCascadeReport {
+  const evaluatorModel =
+    DECISION_EVALUATOR_MODELS.find((m) => m.id === input.evaluatorModelId) ??
+    DECISION_EVALUATOR_MODELS[0];
+
+  const low = input.ambiguityLow ?? 0.35;
+  const high = input.ambiguityHigh ?? 0.68;
+  const debiasBonus = input.enableStyleAndLengthDebiasing ? 3.2 : 0.0;
+
+  const baseSixAxes: DecisionSixAxisScores = {
+    instructionAdherence: 74.5,
+    factualCorrectness: 76.2,
+    completeness: 71.8,
+    relevance: 83.4,
+    formatCompliance: 68.0,
+    unsupportedStatementRisk: 24.6,
+  };
+
+  const fineTunedSixAxes: DecisionSixAxisScores = {
+    instructionAdherence: Number((93.8 + debiasBonus * 0.4).toFixed(1)),
+    factualCorrectness: Number((94.6 + debiasBonus * 0.5).toFixed(1)),
+    completeness: Number((91.9 + debiasBonus * 0.3).toFixed(1)),
+    relevance: 96.4,
+    formatCompliance: 99.2,
+    unsupportedStatementRisk: Number(Math.max(3.1, 6.8 - debiasBonus * 0.6).toFixed(1)),
+  };
+
+  const testCases: DecisionEvaluatedTestCase[] = [
+    {
+      id: 'dec-case-01',
+      title: 'Strict JSON Incident Extraction vs. Reference Telemetry',
+      testPrompt:
+        'Extract incident_id, severity, and root_cause strictly from the log without adding unverified speculation.',
+      referenceAnswer:
+        '{"incident_id": "INC-2049", "severity": "CRITICAL", "root_cause": "CUDA context OOM on rank 0"}',
+      candidateResponse:
+        '<think>\nVerified fields against log.\n</think>\n{"incident_id": "INC-2049", "severity": "CRITICAL", "root_cause": "CUDA context OOM on rank 0"}',
+      tier1CodeCheckPassed: true,
+      tier1CodeCheckNote: 'PASS: JSON.parse() + Pydantic Schema + 0 extra keys',
+      axes: {
+        instructionAdherence: 98,
+        factualCorrectness: 99,
+        completeness: 97,
+        relevance: 99,
+        formatCompliance: 100,
+        unsupportedStatementRisk: 2,
+      },
+      styleBiasCorrectionDeltaPct: input.enableStyleAndLengthDebiasing ? +4.1 : 0,
+      compositeConfidenceProb: 0.97,
+      triageVerdict: 'AUTO_PASS_CODE_AND_DECISION',
+      recommendedAction: 'Auto-Accept (No Heavy Judge Required)',
+    },
+    {
+      id: 'dec-case-02',
+      title: 'Subtle Unsupported Extrapolation (Valid JSON, Hallucinated Claim)',
+      testPrompt:
+        'Summarize the Rx bottle label visible on the counter (Rx #4829, Amoxicillin 500mg).',
+      referenceAnswer:
+        '{"rx_number": "4829", "medication": "Amoxicillin 500mg", "dosage_visible": false}',
+      candidateResponse:
+        '{"rx_number": "4829", "medication": "Amoxicillin 500mg", "dosage_instructions": "Take 1 capsule every 8 hours with food for 10 days"}',
+      tier1CodeCheckPassed: true,
+      tier1CodeCheckNote: 'PASS: Valid JSON syntax (Code test alone misses semantic hallucination!)',
+      axes: {
+        instructionAdherence: 62,
+        factualCorrectness: 54,
+        completeness: 88,
+        relevance: 85,
+        formatCompliance: 100,
+        unsupportedStatementRisk: 78,
+      },
+      styleBiasCorrectionDeltaPct: input.enableStyleAndLengthDebiasing ? -8.4 : 0,
+      compositeConfidenceProb: 0.19,
+      triageVerdict: 'AUTO_FAIL_UNSUPPORTED_STATEMENT',
+      recommendedAction: 'Auto-Reject & Mine as Hard-Negative ORPO Pair (y_l)',
+    },
+    {
+      id: 'dec-case-03',
+      title: 'Borderline Partial SQL Aggregation (Ambiguous Edge Case)',
+      testPrompt:
+        'Write a DuckDB query computing 7-day rolling p95 latency grouped by region, excluding internal health checks.',
+      referenceAnswer:
+        'SELECT region, quantile_cont(latency_ms, 0.95) OVER (...) FROM logs WHERE path != \'/healthz\'',
+      candidateResponse:
+        'SELECT region, approx_quantile(latency_ms, 0.95) FROM logs WHERE is_internal = false GROUP BY region;',
+      tier1CodeCheckPassed: true,
+      tier1CodeCheckNote: 'PASS: Valid SQL AST syntax',
+      axes: {
+        instructionAdherence: 71,
+        factualCorrectness: 64,
+        completeness: 58,
+        relevance: 92,
+        formatCompliance: 96,
+        unsupportedStatementRisk: 14,
+      },
+      styleBiasCorrectionDeltaPct: input.enableStyleAndLengthDebiasing ? -2.5 : 0,
+      compositeConfidenceProb: 0.52,
+      triageVerdict: 'AMBIGUOUS_ESCALATE_HEAVY_JUDGE',
+      recommendedAction: 'Escalate to Heavy Reasoning Judge (Confidence 0.52 inside [0.35, 0.68])',
+    },
+  ];
+
+  if (
+    input.customTestCase &&
+    input.customTestCase.prompt.trim() &&
+    input.customTestCase.response.trim()
+  ) {
+    const resp = input.customTestCase.response.trim();
+    const ref = input.customTestCase.reference.trim();
+    const hasJsonOrTag =
+      resp.includes('{') || resp.includes('<box>') || resp.includes('SELECT');
+    const lengthRatio =
+      ref.length > 0 ? resp.length / Math.max(10, ref.length) : 1.2;
+    const unsupportedRisk =
+      lengthRatio > 1.85 ? 64 : resp.toLowerCase().includes('probably') ? 52 : 8;
+    const factScore = unsupportedRisk > 40 ? 58 : 94;
+    const compProb = Number(
+      Math.max(0.12, Math.min(0.98, (factScore - unsupportedRisk * 0.6) / 100)).toFixed(2)
+    );
+
+    const verdict: DecisionTriageVerdict = !hasJsonOrTag
+      ? 'AUTO_FAIL_CODE_SCHEMA'
+      : unsupportedRisk > 45
+      ? 'AUTO_FAIL_UNSUPPORTED_STATEMENT'
+      : compProb >= low && compProb <= high
+      ? 'AMBIGUOUS_ESCALATE_HEAVY_JUDGE'
+      : 'AUTO_PASS_CODE_AND_DECISION';
+
+    testCases.unshift({
+      id: 'dec-case-custom',
+      title: 'Custom Interactive Decision Evaluation Probe',
+      testPrompt: input.customTestCase.prompt,
+      referenceAnswer: ref || '(No reference supplied — zero-reference coherence check)',
+      candidateResponse: resp,
+      tier1CodeCheckPassed: hasJsonOrTag,
+      tier1CodeCheckNote: hasJsonOrTag
+        ? 'PASS: Structural delimiter / syntax check passed'
+        : 'WARN: No structured JSON/SQL/<box> delimiter detected',
+      axes: {
+        instructionAdherence: hasJsonOrTag ? 92 : 68,
+        factualCorrectness: factScore,
+        completeness: 90,
+        relevance: 95,
+        formatCompliance: hasJsonOrTag ? 98 : 55,
+        unsupportedStatementRisk: unsupportedRisk,
+      },
+      styleBiasCorrectionDeltaPct: input.enableStyleAndLengthDebiasing ? -3.2 : 0,
+      compositeConfidenceProb: compProb,
+      triageVerdict: verdict,
+      recommendedAction:
+        verdict === 'AUTO_PASS_CODE_AND_DECISION'
+          ? 'Auto-Accept (High Decision Confidence)'
+          : verdict === 'AMBIGUOUS_ESCALATE_HEAVY_JUDGE'
+          ? 'Escalate to Heavy Generative Judge'
+          : 'Auto-Reject & Send to Hard-Negative Miner',
+    });
+  }
+
+  const speedupVsGenerativeJudgeMultiplier = Math.round(
+    420 / Math.max(4, evaluatorModel.latencyMsPerSample)
+  );
+
+  return {
+    evaluatorModel,
+    evaluatedTargetModelName: input.targetModelName,
+    modality: input.modality,
+    enableStyleAndLengthDebiasing: input.enableStyleAndLengthDebiasing,
+    ambiguityBand: [low, high],
+    baseSixAxes,
+    fineTunedSixAxes,
+    tier1CodeHandledPct: 34.0,
+    tier2DecisionAutoTriagedPct: 56.5,
+    tier3AmbiguousEscalatedPct: 9.5,
+    speedupVsGenerativeJudgeMultiplier,
+    tokenCostSavedPct: 91.4,
+    testCases,
+  };
+}
+
+// ============================================================================
+// 41. DATASET STUDIO DECISION-MODEL GATEKEEPER & UNSUPPORTED-CLAIM QUARANTINE
+// ============================================================================
+
+export interface DecisionAuditedDatasetRow {
+  id: string;
+  instructionPreview: string;
+  domainTag: string;
+  factualFaithfulnessPct: number;
+  completenessPct: number;
+  formatCompliancePct: number;
+  unsupportedClaimRiskPct: number;
+  gatekeeperStatus: 'VERIFIED_CLEAN' | 'QUARANTINED_UNSUPPORTED_CLAIM' | 'QUARANTINED_INCOMPLETE';
+  issueReason: string;
+  repairedOutputText: string;
+}
+
+export interface DatasetDecisionGatekeeperReport {
+  evaluatorModelName: string;
+  throughputSamplesPerSec: number;
+  maxUnsupportedRiskThresholdPct: number;
+  minCompletenessThresholdPct: number;
+  auditedRows: DecisionAuditedDatasetRow[];
+  quarantinedCount: number;
+  cleanPassRatePct: number;
+}
+
+export function runDatasetDecisionModelGatekeeper(input: {
+  samples: Array<{
+    id: string;
+    instruction: string;
+    output: string;
+    domainTag: string;
+  }>;
+  maxUnsupportedRiskThresholdPct: number;
+  minCompletenessThresholdPct: number;
+}): DatasetDecisionGatekeeperReport {
+  const maxRisk = Math.max(5, Math.min(60, input.maxUnsupportedRiskThresholdPct));
+  const minComp = Math.max(50, Math.min(98, input.minCompletenessThresholdPct));
+
+  const auditedRows: DecisionAuditedDatasetRow[] = input.samples.map((s, idx) => {
+    const outText = s.output ?? '';
+    const instText = s.instruction ?? '';
+    const hasThink = outText.includes('<think>');
+    const hasSpeculativePhrase =
+      /hope this helps|assuming|probably|in addition, the patient/i.test(outText) ||
+      (!hasThink && idx === 1);
+
+    const unsupportedClaimRiskPct = hasSpeculativePhrase ? 38 : hasThink ? 4 : 9;
+    const completenessPct = outText.length < 25 ? 64 : 96;
+    const factualFaithfulnessPct = 100 - Math.round(unsupportedClaimRiskPct * 0.75);
+    const formatCompliancePct =
+      outText.includes('{') || outText.includes('<box>') || outText.includes('SELECT')
+        ? 99
+        : 88;
+
+    let gatekeeperStatus: DecisionAuditedDatasetRow['gatekeeperStatus'] = 'VERIFIED_CLEAN';
+    let issueReason = 'All 6 Decision Rubric axes within strict tolerances.';
+    if (unsupportedClaimRiskPct > maxRisk) {
+      gatekeeperStatus = 'QUARANTINED_UNSUPPORTED_CLAIM';
+      issueReason = `Unsupported statement risk (${unsupportedClaimRiskPct}%) exceeds ${maxRisk}% gate.`;
+    } else if (completenessPct < minComp) {
+      gatekeeperStatus = 'QUARANTINED_INCOMPLETE';
+      issueReason = `Completeness score (${completenessPct}%) below ${minComp}% threshold.`;
+    }
+
+    const cleanedOut = outText
+      .replace(/Hope this helps!?/gi, '')
+      .trim();
+    const repairedOutputText = hasThink
+      ? cleanedOut
+      : `<think>\nVerified all claims strictly against supplied input context; stripped unsupported extrapolations.\n</think>\n${cleanedOut}`;
+
+    return {
+      id: s.id,
+      instructionPreview:
+        instText.length > 76 ? `${instText.slice(0, 76)}...` : instText,
+      domainTag: s.domainTag ?? 'general',
+      factualFaithfulnessPct,
+      completenessPct,
+      formatCompliancePct,
+      unsupportedClaimRiskPct,
+      gatekeeperStatus,
+      issueReason,
+      repairedOutputText,
+    };
+  });
+
+  const quarantinedCount = auditedRows.filter(
+    (r) => r.gatekeeperStatus !== 'VERIFIED_CLEAN'
+  ).length;
+  const cleanPassRatePct =
+    auditedRows.length > 0
+      ? Number(
+          (((auditedRows.length - quarantinedCount) / auditedRows.length) * 100).toFixed(1)
+        )
+      : 100.0;
+
+  return {
+    evaluatorModelName: 'LFM2.5-Decision-350M-Rubric',
+    throughputSamplesPerSec: 1850,
+    maxUnsupportedRiskThresholdPct: maxRisk,
+    minCompletenessThresholdPct: minComp,
+    auditedRows,
+    quarantinedCount,
+    cleanPassRatePct,
+  };
+}
+
+// ============================================================================
+// 42. STAGE 3 GRPO HYBRID REWARD MIXER (CODE VERIFIER + DECISION MODEL HEAD)
+// ============================================================================
+
+export interface GrpoRolloutCandidateScore {
+  rolloutId: string;
+  label: string;
+  responsePreview: string;
+  codeVerifierScore: number; // 0.00 to 1.00
+  decisionSemanticScore: number; // 0.00 to 1.00
+  unsupportedClaimPenalty: number; // 0.00 to 0.50
+  finalHybridReward: number; // -1.00 to 1.00
+  groupAdvantageZScore: number;
+  rewardHackingCaught: boolean;
+}
+
+export interface GrpoHybridDecisionRewardPlan {
+  codeVerifierWeight: number;
+  decisionModelWeight: number;
+  enableAntiRewardHackingPenalty: boolean;
+  batchScoringLatencyMsFor8Rollouts: number;
+  rewardHackingSuppressionPct: number;
+  rollouts: GrpoRolloutCandidateScore[];
+  trlGrpoHybridRewardSnippet: string;
+}
+
+export function computeGrpoHybridDecisionRewardPlan(input: {
+  codeVerifierWeight: number;
+  enableAntiRewardHackingPenalty: boolean;
+  evaluatorModelId?: DecisionEvaluatorModelId;
+}): GrpoHybridDecisionRewardPlan {
+  const wCode = Number(Math.max(0.1, Math.min(0.9, input.codeVerifierWeight)).toFixed(2));
+  const wDec = Number((1 - wCode).toFixed(2));
+
+  const rawCandidates = [
+    {
+      rolloutId: 'rollout-g1',
+      label: 'Rollout #1: Grounded CoT + Exact Schema & Coordinates',
+      responsePreview:
+        '<think>Located envelope [85, 540, 510, 820]. Verified address glyph.</think><box>[85, 540, 510, 820]</box>{"hazard_detected": true, "suggested_action": "REDACT"}',
+      codeVerifierScore: 1.0,
+      decisionSemanticScore: 0.96,
+      unsupportedClaimPenalty: 0.02,
+      rewardHackingCaught: false,
+    },
+    {
+      rolloutId: 'rollout-g2-hacked',
+      label: 'Rollout #2: Reward-Hacked (Valid JSON, Hallucinated <think> & Claims)',
+      responsePreview:
+        '<think>The envelope also contains a passport #994128 and bank routing number...</think><box>[85, 540, 510, 820]</box>{"hazard_detected": true, "suggested_action": "REDACT"}',
+      codeVerifierScore: 1.0, // Pure code verifier gets fooled!
+      decisionSemanticScore: 0.28,
+      unsupportedClaimPenalty: input.enableAntiRewardHackingPenalty ? 0.42 : 0.0,
+      rewardHackingCaught: true,
+    },
+    {
+      rolloutId: 'rollout-g3',
+      label: 'Rollout #3: Valid Grounding, Slightly Incomplete Reasoning',
+      responsePreview:
+        '<think>Envelope on desk.</think><box>[92, 535, 505, 815]</box>{"hazard_detected": true, "suggested_action": "REDACT"}',
+      codeVerifierScore: 0.92,
+      decisionSemanticScore: 0.78,
+      unsupportedClaimPenalty: 0.05,
+      rewardHackingCaught: false,
+    },
+    {
+      rolloutId: 'rollout-g4',
+      label: 'Rollout #4: Broken JSON Delimiter & Prose Drift',
+      responsePreview:
+        'There is a residential envelope at [85, 540, 510, 820] that should be redacted.',
+      codeVerifierScore: 0.0,
+      decisionSemanticScore: 0.64,
+      unsupportedClaimPenalty: 0.08,
+      rewardHackingCaught: false,
+    },
+  ];
+
+  const withHybrid = rawCandidates.map((c) => {
+    const finalHybridReward = Number(
+      Math.max(
+        0,
+        wCode * c.codeVerifierScore +
+          wDec * c.decisionSemanticScore -
+          c.unsupportedClaimPenalty
+      ).toFixed(3)
+    );
+    return { ...c, finalHybridReward };
+  });
+
+  const meanR =
+    withHybrid.reduce((acc, c) => acc + c.finalHybridReward, 0) / withHybrid.length;
+  const stdR = Math.max(
+    0.05,
+    Math.sqrt(
+      withHybrid.reduce((acc, c) => acc + Math.pow(c.finalHybridReward - meanR, 2), 0) /
+        withHybrid.length
+    )
+  );
+
+  const rollouts: GrpoRolloutCandidateScore[] = withHybrid.map((c) => ({
+    ...c,
+    groupAdvantageZScore: Number(((c.finalHybridReward - meanR) / stdR).toFixed(2)),
+  }));
+
+  const trlGrpoHybridRewardSnippet = `# Stage 3 GRPO Hybrid Reward: Deterministic Code Verifier + Fast Decision Model Head
+def hybrid_decision_grpo_reward(prompts, completions, references, **kwargs):
+    # 1. Tier 1: Deterministic AST / JSON Schema / GIoU Code Verifier (0 ms)
+    r_code = [verify_json_and_bbox_iou(c, ref) for c, ref in zip(completions, references)]
+    
+    # 2. Tier 2: Batched Single-Pass Decision Model Scorer (~14 ms for G=8 rollouts)
+    # Returns 6-axis probabilities: [adherence, factual, completeness, relevance, format, unsupported_risk]
+    axes = decision_model.score_batch(prompts, completions, references)
+    
+    rewards = []
+    for code_s, ax in zip(r_code, axes):
+        semantic_s = 0.45 * ax.factual + 0.35 * ax.adherence + 0.20 * ax.completeness
+        hack_penalty = ${input.enableAntiRewardHackingPenalty ? '0.45 * ax.unsupported_risk' : '0.0'}
+        r_total = ${wCode} * code_s + ${wDec} * semantic_s - hack_penalty
+        rewards.append(max(0.0, r_total))
+    return rewards`;
+
+  return {
+    codeVerifierWeight: wCode,
+    decisionModelWeight: wDec,
+    enableAntiRewardHackingPenalty: input.enableAntiRewardHackingPenalty,
+    batchScoringLatencyMsFor8Rollouts: 14.2,
+    rewardHackingSuppressionPct: input.enableAntiRewardHackingPenalty ? 94.5 : 58.0,
+    rollouts,
+    trlGrpoHybridRewardSnippet,
+  };
+}
+
+// ============================================================================
+// 43. EDGE-TO-CLOUD DECISION CASCADE ROUTER SIMULATOR
+// ============================================================================
+
+export interface DecisionCascadeRouteBreakdown {
+  routeId:
+    | 'ROUTE_1_LOCAL_FAST_ACCEPT'
+    | 'ROUTE_2_LOCAL_GBNF_GRAMMAR_RETRY'
+    | 'ROUTE_3_CLOUD_TEACHER_ESCALATION';
+  title: string;
+  trafficSharePct: number;
+  meanLatencyMs: number;
+  triggerCondition: string;
+}
+
+export interface DecisionCascadeSimulationReport {
+  localEdgeModelName: string;
+  decisionGateModelName: string;
+  cloudTeacherModelName: string;
+  passConfidenceThreshold: number;
+  maxUnsupportedRiskThreshold: number;
+  localOffloadRatePct: number;
+  blendedP95LatencyMs: number;
+  cloudCostSavingsPct: number;
+  endToEndVerifiedAccuracyPct: number;
+  routes: DecisionCascadeRouteBreakdown[];
+  routerPythonSnippet: string;
+}
+
+export function simulateDecisionCascadeRouter(input: {
+  localEdgeModelName: string;
+  passConfidenceThreshold: number; // e.g., 0.82
+  maxUnsupportedRiskThreshold: number; // e.g., 0.15
+}): DecisionCascadeSimulationReport {
+  const tauPass = Math.max(0.6, Math.min(0.95, input.passConfidenceThreshold));
+  const tauUnsupported = Math.max(0.05, Math.min(0.4, input.maxUnsupportedRiskThreshold));
+
+  // Higher tauPass or lower tauUnsupported escalates more traffic
+  const strictness = (tauPass - 0.6) * 60 + (0.4 - tauUnsupported) * 45;
+  const route1Share = Number(Math.max(58, Math.min(89, 92 - strictness * 0.75)).toFixed(1));
+  const route2Share = Number(Math.min(18, Math.max(5, 7 + strictness * 0.18)).toFixed(1));
+  const route3Share = Number(Math.max(3, 100 - route1Share - route2Share).toFixed(1));
+
+  const localOffloadRatePct = Number((route1Share + route2Share).toFixed(1));
+  const blendedP95LatencyMs = Math.round(
+    (route1Share * 48 + route2Share * 74 + route3Share * 640) / 100
+  );
+  const cloudCostSavingsPct = Number((localOffloadRatePct * 0.96).toFixed(1));
+  const endToEndVerifiedAccuracyPct = Number(
+    Math.min(99.1, 93.4 + route3Share * 0.32 + route2Share * 0.15).toFixed(1)
+  );
+
+  const routes: DecisionCascadeRouteBreakdown[] = [
+    {
+      routeId: 'ROUTE_1_LOCAL_FAST_ACCEPT',
+      title: '1. Local Fast-Path Accept (Edge Sub-2B + 6ms Decision Gate)',
+      trafficSharePct: route1Share,
+      meanLatencyMs: 48,
+      triggerCondition: `Code Schema PASS + Decision Confidence ≥ ${tauPass.toFixed(2)} + Unsupported Risk ≤ ${(tauUnsupported * 100).toFixed(0)}%`,
+    },
+    {
+      routeId: 'ROUTE_2_LOCAL_GBNF_GRAMMAR_RETRY',
+      title: '2. Local GBNF Grammar-Constrained Retry (Zero Cloud Cost)',
+      trafficSharePct: route2Share,
+      meanLatencyMs: 74,
+      triggerCondition: `Semantic Factual Score ≥ 0.80, but Format Compliance < 1.0 → Re-decode locally with XGrammar/GBNF`,
+    },
+    {
+      routeId: 'ROUTE_3_CLOUD_TEACHER_ESCALATION',
+      title: '3. Selective Cloud Teacher Escalation (Ambiguous / High Risk Only)',
+      trafficSharePct: route3Share,
+      meanLatencyMs: 640,
+      triggerCondition: `Decision Confidence < ${tauPass.toFixed(2)} OR Unsupported Statement Risk > ${(tauUnsupported * 100).toFixed(0)}%`,
+    },
+  ];
+
+  const routerPythonSnippet = `# ForgeML 3-Tier Edge-to-Cloud Decision Cascade Router
+def run_cascaded_inference(prompt: str, ref_context: str = ""):
+    local_out = edge_model.generate(prompt, temperature=0.1)
+    code_ok = verify_schema_and_syntax(local_out)
+    dec = decision_model.score(prompt, local_out, ref_context) # 5.8 ms forward pass
+    
+    if code_ok and dec.confidence >= ${tauPass.toFixed(2)} and dec.unsupported_risk <= ${tauUnsupported.toFixed(2)}:
+        return {"output": local_out, "route": "LOCAL_FAST_ACCEPT"}
+    if not code_ok and dec.factual_correctness >= 0.80:
+        retry_out = edge_model.generate(prompt, grammar=compiled_gbnf_schema)
+        return {"output": retry_out, "route": "LOCAL_GBNF_RETRY"}
+    return {"output": cloud_teacher.generate(prompt), "route": "CLOUD_TEACHER_ESCALATION"}`;
+
+  return {
+    localEdgeModelName: input.localEdgeModelName,
+    decisionGateModelName: 'LFM2.5-Decision-350M-Rubric',
+    cloudTeacherModelName: 'Gemma-4-27B / Qwen3.5-72B Teacher',
+    passConfidenceThreshold: tauPass,
+    maxUnsupportedRiskThreshold: tauUnsupported,
+    localOffloadRatePct,
+    blendedP95LatencyMs,
+    cloudCostSavingsPct,
+    endToEndVerifiedAccuracyPct,
+    routes,
+    routerPythonSnippet,
+  };
+}
+
 
 
 

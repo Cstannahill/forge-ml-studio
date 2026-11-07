@@ -1,7 +1,7 @@
 export interface GlossaryTermEntry {
   key: string;
   term: string;
-  category: 'METRIC' | 'HYPERPARAMETER' | 'FORMAT' | 'HARDWARE' | 'ARCHITECTURE';
+  category: 'METRIC' | 'HYPERPARAMETER' | 'FORMAT' | 'HARDWARE' | 'ARCHITECTURE' | 'BENCHMARK';
   whatItIs: string;
   whatItTellsUs: string;
   idealDirection?: string;
