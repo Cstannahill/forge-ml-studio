@@ -220,11 +220,25 @@ def load_model_and_tokenizer(manifest: Dict[str, Any]):
     if bnb_config is not None:
         model = prepare_model_for_kbit_training(model)
 
-    target_modules = (
-        ["q_proj", "k_proj", "v_proj", "out_proj", "in_proj", "gate_proj", "up_proj", "down_proj"]
-        if architecture == "LFM2.5"
-        else ["q_proj", "k_proj", "v_proj", "o_proj", "gate_proj", "up_proj", "down_proj"]
-    )
+    if architecture == "LFM3":
+        # LiquidAI/LFM3-1.7B Tri-Hybrid (Lfm3ForCausalLM):
+        # 13 Lfm3ShortConv (in_proj, out_proj) + 5 SWA / 6 Global Attention (q_proj, k_proj, v_proj, o_proj, gate_proj) + SwiGLU Lfm3MLP (w1, w2, w3)
+        target_modules = [
+            "q_proj",
+            "k_proj",
+            "v_proj",
+            "o_proj",
+            "gate_proj",
+            "w1",
+            "w2",
+            "w3",
+            "in_proj",
+            "out_proj",
+        ]
+    elif architecture == "LFM2.5":
+        target_modules = ["q_proj", "k_proj", "v_proj", "out_proj", "in_proj", "gate_proj", "up_proj", "down_proj"]
+    else:
+        target_modules = ["q_proj", "k_proj", "v_proj", "o_proj", "gate_proj", "up_proj", "down_proj"]
 
     peft_config = LoraConfig(
         r=lora_r,

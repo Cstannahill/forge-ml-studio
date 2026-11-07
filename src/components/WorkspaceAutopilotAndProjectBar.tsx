@@ -372,7 +372,7 @@ export const WorkspaceAutopilotAndProjectBar: React.FC<
               One-Click End-to-End Recipe Presets (Goal-Driven Autopilot)
             </h2>
             <span className="text-[11px] font-mono px-2 py-0.5 rounded bg-[#1D2021] border border-[#FABD2F]/40 text-[#FABD2F]">
-              6 Battle-Tested Profiles · Diff Preview Enabled
+              8 Battle-Tested Profiles · Diff Preview Enabled
             </span>
           </div>
           <span className="text-[11px] text-[#A89984]">

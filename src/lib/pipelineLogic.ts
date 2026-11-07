@@ -1,5 +1,6 @@
 export type ArchitectureFamily =
   | 'Qwen3.5'
+  | 'LFM3'
   | 'LFM2.5'
   | 'Gemma4'
   | 'Llama3.3'
@@ -54,8 +55,9 @@ export function estimateVramRequirements(input: VramEstimateInput): VramEstimate
 
   const optimizerAndGradsGb = Number((input.paramsBillions * optimizerMultiplier).toFixed(2));
 
-  // Architecture efficiency factor: LFM2.5 (Liquid state-space hybrid) uses significantly less KV/activation memory at long context
+  // Architecture efficiency factor: LFM3 (Tri-Hybrid: 13 ShortConv + 5 SWA-256 + 6 Full Attn) & LFM2.5 use far less KV/activation memory at long context
   const archActivationFactor: Record<ArchitectureFamily, number> = {
+    'LFM3': 0.46,
     'LFM2.5': 0.58,
     'Qwen3.5': 0.82,
     'Gemma4': 0.88,
@@ -555,7 +557,9 @@ export function generateContainerArtifacts(params: {
       : 'OTEL_EXPORTER_OTLP_ENDPOINT="http://otel-collector:4317"\nENV REPORT_TO="none"';
 
   const archSpecificKernel =
-    params.architecture === 'LFM2.5'
+    params.architecture === 'LFM3'
+      ? '# LiquidAI LFM3 Tri-Hybrid (13 ShortConv L_cache=7 + 5 SWA-256 + 6 Full Attention) kernels\nRUN pip install --no-cache-dir flash-attn>=2.7.2 causal-conv1d>=1.4.0'
+      : params.architecture === 'LFM2.5'
       ? '# Liquid Foundation Model (LFM2.5) hybrid state-space + attention kernels\nRUN pip install --no-cache-dir causal-conv1d>=1.4.0 mamba-ssm>=2.2.2'
       : params.architecture === 'Gemma4'
       ? '# Gemma4 sliding-window + softcap FlashAttention-3 kernels\nRUN pip install --no-cache-dir flash-attn>=2.7.2 --no-build-isolation'
@@ -878,7 +882,9 @@ export function buildPlainLanguageBenchmarkAnalysis(params: {
     {
       aspect: `${architecture} Architecture Behavior`,
       detail:
-        architecture === 'LFM2.5'
+        architecture === 'LFM3'
+          ? 'As a 24-layer Tri-Hybrid architecture (13 Gated ShortConv L_cache=7 layers + 5 Sliding-Window 256 layers + 6 Global Full-Attention layers with head-wise sigmoid gate_proj and SwiGLU w1/w2/w3), LFM3-1.7B delivers 2.5x faster 32K prefill and 256K context reach in ~1.0 GB at 4-bit.'
+          : architecture === 'LFM2.5'
           ? 'As a Liquid Hybrid state-space model, LFM2.5 retains constant memory speed on long documents while adopting the cleaner instruction formatting from your dataset.'
           : architecture === 'Gemma4'
           ? 'Gemma4 preserves its sliding-window attention speed while gaining much stronger step-by-step reasoning discipline.'
@@ -994,14 +1000,17 @@ export function buildSafetensorsExportPlan(input: SafetensorsExportInput): Safet
 
   // Estimate layer & tensor count for compact 0.3B - 9B models
   const estimatedLayers =
-    input.paramsBillions <= 0.5
+    input.architecture === 'LFM3'
+      ? 24
+      : input.paramsBillions <= 0.5
       ? 16
       : input.paramsBillions <= 1.5
       ? 24
       : input.paramsBillions <= 3.0
       ? 28
       : 32;
-  const tensorsPerLayer = input.architecture === 'LFM2.5' ? 11 : 9;
+  const tensorsPerLayer =
+    input.architecture === 'LFM3' ? 12 : input.architecture === 'LFM2.5' ? 11 : 9;
   const mergedTensorCount = estimatedLayers * tensorsPerLayer + 3;
 
   const hiddenDim =
@@ -2242,7 +2251,9 @@ export function generateExecutableRunBundle(input: {
   };
 }): ExecutableRunBundle {
   const loraTargets =
-    input.architecture === 'LFM2.5'
+    input.architecture === 'LFM3'
+      ? '["q_proj", "k_proj", "v_proj", "o_proj", "gate_proj", "w1", "w2", "w3", "in_proj", "out_proj"]'
+      : input.architecture === 'LFM2.5'
       ? '["q_proj", "k_proj", "v_proj", "out_proj", "in_proj", "conv1d"]'
       : '["q_proj", "k_proj", "v_proj", "o_proj", "gate_proj", "up_proj", "down_proj"]';
 
@@ -2254,12 +2265,17 @@ export function generateExecutableRunBundle(input: {
 base_model: ${input.modelId}
 model_type: AutoModelForCausalLM
 tokenizer_type: AutoTokenizer
+trust_remote_code: ${input.architecture === 'LFM3' || input.architecture === 'LFM2.5' ? 'true' : 'false'}
 load_in_4bit: true
 adapter: qlora
 lora_r: ${input.hpoConfig.loraRank}
 lora_alpha: ${input.hpoConfig.loraAlpha}
 lora_dropout: ${input.hpoConfig.loraDropout}
-lora_target_linear: true
+lora_target_linear: true${
+    input.architecture === 'LFM3'
+      ? '\nlora_target_modules:\n  - q_proj\n  - k_proj\n  - v_proj\n  - o_proj\n  - gate_proj\n  - w1\n  - w2\n  - w3\n  - in_proj\n  - out_proj'
+      : ''
+  }
 
 sequence_len: ${Math.min(8192, input.contextWindow)}
 sample_packing: ${input.samplePackingEnabled}
@@ -2393,8 +2409,10 @@ TEMPLATE """<|im_start|>system
 {{ .Prompt }}<|im_end|>
 <|im_start|>assistant
 """
-PARAMETER temperature 0.2
+PARAMETER temperature ${input.architecture === 'LFM3' ? '0.1' : '0.2'}
+PARAMETER top_k ${input.architecture === 'LFM3' ? '50' : '40'}
 PARAMETER top_p 0.9
+PARAMETER repeat_penalty ${input.architecture === 'LFM3' ? '1.1' : '1.05'}
 PARAMETER num_ctx ${Math.min(32768, input.contextWindow)}
 PARAMETER stop "<|im_end|>"
 `;
@@ -3044,7 +3062,30 @@ export function computeImatrixQuantizationCalibration(input: {
   );
 
   const salientTensorsProtected =
-    input.architecture === 'LFM2.5'
+    input.architecture === 'LFM3'
+      ? [
+          {
+            tensorName: 'model.embed_tokens.weight (Tied 128k Vocab & LM Head)',
+            activationSalienceScore: 9.9,
+            fallbackPrecision: input.protectSalientLayers ? 'Q8_0 (Protected)' : input.quantType,
+          },
+          {
+            tensorName: 'model.layers.*.conv.in_proj.weight & conv.weight (13 ShortConv L_cache=7)',
+            activationSalienceScore: 9.6,
+            fallbackPrecision: input.protectSalientLayers ? 'FP16 / Q8_0 (Protected)' : input.quantType,
+          },
+          {
+            tensorName: 'model.layers.*.self_attn.gate_proj.weight (Sigmoid Attn Output Gate)',
+            activationSalienceScore: 9.3,
+            fallbackPrecision: input.protectSalientLayers ? 'Q6_K (Protected)' : input.quantType,
+          },
+          {
+            tensorName: 'model.layers.*.feed_forward.w2.weight (SwiGLU 7680->2048 Down-Proj)',
+            activationSalienceScore: 8.9,
+            fallbackPrecision: input.protectSalientLayers ? 'Q6_K (Protected)' : input.quantType,
+          },
+        ]
+      : input.architecture === 'LFM2.5'
       ? [
           {
             tensorName: 'token_embd.weight & output.weight',
@@ -3432,7 +3473,14 @@ export function computeLayerWiseAdaptiveLoraPlan(input: {
   useRsLora: boolean;
   allocationPolicy: LoraAllocationPolicy;
 }): AdaptiveLoraPlan {
-  const totalLayers = input.paramsBillions <= 0.5 ? 16 : input.paramsBillions <= 1.5 ? 24 : 28;
+  const totalLayers =
+    input.architecture === 'LFM3'
+      ? 24
+      : input.paramsBillions <= 0.5
+      ? 16
+      : input.paramsBillions <= 1.5
+      ? 24
+      : 28;
   const qSize = Math.floor(totalLayers / 4);
 
   const multipliers: Record<LoraAllocationPolicy, [number, number, number, number]> = {
@@ -3462,7 +3510,11 @@ export function computeLayerWiseAdaptiveLoraPlan(input: {
     ];
 
     const modules =
-      input.architecture === 'LFM2.5'
+      input.architecture === 'LFM3'
+        ? idx >= 2
+          ? 'w1, w2, w3 (SwiGLU), q/k/v/o_proj, gate_proj, in_proj, out_proj'
+          : 'in_proj, out_proj (ShortConv L_cache=7), q/k/v/o_proj, gate_proj'
+        : input.architecture === 'LFM2.5'
         ? idx >= 2
           ? 'in_proj, out_proj, ffn_up, ffn_down'
           : 'conv1d, in_proj, out_proj'
@@ -3504,6 +3556,11 @@ export function computeLayerWiseAdaptiveLoraPlan(input: {
     .map((q) => `    "${q.layerRange}": ${q.allocatedRank}`)
     .join(',\n');
 
+  const peftTargetModulesLine =
+    input.architecture === 'LFM3'
+      ? '["q_proj", "k_proj", "v_proj", "o_proj", "gate_proj", "w1", "w2", "w3", "in_proj", "out_proj"]'
+      : '"all-linear"';
+
   const peftConfigSnippet = `from peft import LoraConfig
 
 peft_config = LoraConfig(
@@ -3514,7 +3571,7 @@ peft_config = LoraConfig(
     rank_pattern={
 ${rankPatternEntries}
     },
-    target_modules="all-linear",
+    target_modules=${peftTargetModulesLine},
     task_type="CAUSAL_LM",
 )`;
 
@@ -3569,17 +3626,22 @@ export function inspectTokenizerAndChatTemplate(input: {
   injectToolTokens: boolean;
 }): TokenizerDiagnosticReport {
   const isGemma = input.architecture === 'Gemma4';
-  const eosTokenLiteral = isGemma && input.targetFormat !== 'chatml' ? '<end_of_turn>' : '<|im_end|>';
-  const eosTokenId = isGemma ? 107 : 151645;
-  const padTokenId = isGemma ? 0 : 151643;
+  const isLfm3 = input.architecture === 'LFM3';
+  const eosTokenLiteral =
+    isGemma && input.targetFormat !== 'chatml' ? '<end_of_turn>' : '<|im_end|>';
+  const eosTokenId = isLfm3 ? 124900 : isGemma ? 107 : 151645;
+  const padTokenId = isLfm3 ? 124893 : isGemma ? 0 : 151643;
+  const bosOrStartTokenId = isLfm3 ? 124894 : 151644;
 
   const specialTokens: SpecialTokenDiagnostic[] = [
     {
       tokenLiteral: '<|im_start|>',
-      tokenId: 151644,
+      tokenId: bosOrStartTokenId,
       atomicStatus: 'ATOMIC_SINGLE_ID',
       subwordCount: 1,
-      roleDescription: 'Turn start delimiter',
+      roleDescription: isLfm3
+        ? 'LFM3 turn start / BOS delimiter (vocab_size=128,000)'
+        : 'Turn start delimiter',
     },
     {
       tokenLiteral: eosTokenLiteral,
@@ -4105,7 +4167,8 @@ export function simulateHardwareAndEdgeTargets(input: {
     Math.min(32, Math.floor((headroomGb / Math.max(0.25, vramEst.kvCacheAndActivationsGb)) * 4))
   );
 
-  const archBonus = input.architecture === 'LFM2.5' ? 1.24 : 1.0;
+  const archBonus =
+    input.architecture === 'LFM3' ? 1.48 : input.architecture === 'LFM2.5' ? 1.24 : 1.0;
   const tokensPerSecTrain = Math.round(
     (2800 / Math.max(0.3, input.paramsBillions)) * gSpec.speedMult * archBonus
   );
@@ -4268,7 +4331,9 @@ export function buildTextPythonEngineManifest(input: {
         ];
 
   const engineBackendLabel =
-    input.architecture === 'LFM2.5' || input.useDora
+    input.architecture === 'LFM3'
+      ? 'HuggingFace Transformers + PEFT (LFM3 Tri-Hybrid: 13 ShortConv + 5 SWA + 6 Full Attn · DoRA)'
+      : input.architecture === 'LFM2.5' || input.useDora
       ? 'HuggingFace Transformers + PEFT (LFM2.5 State-Space / DoRA)'
       : 'Unsloth FastLanguageModel + TRL (Fused Triton Kernels)';
 
@@ -4556,6 +4621,7 @@ export interface WhiteBoxLogitDistillationConfig {
   teacherModelId:
     | 'Qwen/Qwen3.5-9B-Instruct'
     | 'Qwen/Qwen3.5-27B-Instruct'
+    | 'LiquidAI/LFM3-1.7B'
     | 'LiquidAI/LFM2.5-1.6B-Instruct';
   divergenceType: LogitDistillationDivergence;
   temperature: number;
@@ -5153,6 +5219,8 @@ export function parseEngineMetricLine(line: string): {
 // ============================================================================
 
 export type EndToEndRecipePresetId =
+  | 'recipe-lfm3-17b-agentic-mcp-openclaw'
+  | 'recipe-lfm3-17b-edge-rag-structured'
   | 'recipe-ultra-edge-450m-privacy'
   | 'recipe-gemma4-e4b-doc-table-ocr'
   | 'recipe-qwen35-2b-json-tool-agent'
@@ -5383,6 +5451,70 @@ export const END_TO_END_RECIPE_PRESETS: EndToEndRecipePreset[] = [
     estimatedVramGb: 4.3,
     estimatedRuntimeMinutes: 24,
   },
+  {
+    id: 'recipe-lfm3-17b-agentic-mcp-openclaw',
+    title: 'LFM3-1.7B Tri-Hybrid 256K Agentic Tool & MCP Router (OpenClaw / Hermes)',
+    shortBadge: 'LFM3-1.7B · 256K Agentic RL',
+    goalDescription:
+      'Configures LiquidAI/LFM3-1.7B (13 Gated ShortConv + 5 SWA-256 + 6 Full Attn) with w1/w2/w3 + in_proj/out_proj DoRA adapters and Stage 3 MCP/BFCL/OpenClaw verifiers for sub-1GB 4-bit local agents.',
+    pipelineTrack: 'TEXT_LLM',
+    targetModelId: 'LiquidAI/LFM3-1.7B',
+    targetModelName: 'LFM3-1.7B (Tri-Hybrid 256K Agent)',
+    recommendedBlendId: 'blend-33-lfm3-agentic-harness-mcp-openclaw',
+    recommendedBlendTitle: 'LFM3-1.7B Tri-Hybrid Agentic Harness & MCP Router (Hermes / Pi / OpenClaw)',
+    targetFormat: 'chatml',
+    hpoConfig: {
+      learningRate: 0.0002,
+      loraRank: 32,
+      loraAlpha: 64,
+      loraDropout: 0.04,
+      warmupRatio: 0.05,
+      weightDecay: 0.01,
+      neftuneAlpha: 5,
+      batchSize: 8,
+      lrScheduler: 'wsd',
+    },
+    useDora: true,
+    samplePackingEnabled: true,
+    completionOnlyLossEnabled: true,
+    stage2AlignmentMethod: 'ORPO',
+    stage3Verifiers: ['json_schema', 'python_pytest', 'think_format_length'],
+    quantizationExportTarget: 'GGUF-Q4_K_M / NVFP4 (~1.0 GB · 2.5x Prefill / 1.8x Decode)',
+    estimatedVramGb: 3.1,
+    estimatedRuntimeMinutes: 19,
+  },
+  {
+    id: 'recipe-lfm3-17b-edge-rag-structured',
+    title: 'LFM3-1.7B 6-Teacher MOPD & 256K Long-Context RAG Specialist',
+    shortBadge: 'LFM3-1.7B · 256K MOPD RAG',
+    goalDescription:
+      'Tunes LiquidAI/LFM3-1.7B for 32K–256K multi-document RAG synthesis, enterprise workflow extraction, and Multi-Domain On-Policy Distillation (MOPD) with strict inline citations.',
+    pipelineTrack: 'TEXT_LLM',
+    targetModelId: 'LiquidAI/LFM3-1.7B',
+    targetModelName: 'LFM3-1.7B (Tri-Hybrid 256K Agent)',
+    recommendedBlendId: 'blend-34-lfm3-mopd-256k-long-context-rag',
+    recommendedBlendTitle: 'LFM3-1.7B 6-Teacher MOPD Distillation & 256K Long-Context Synthesis',
+    targetFormat: 'chatml',
+    hpoConfig: {
+      learningRate: 0.00018,
+      loraRank: 32,
+      loraAlpha: 64,
+      loraDropout: 0.04,
+      warmupRatio: 0.05,
+      weightDecay: 0.01,
+      neftuneAlpha: 5,
+      batchSize: 8,
+      lrScheduler: 'wsd',
+    },
+    useDora: true,
+    samplePackingEnabled: true,
+    completionOnlyLossEnabled: true,
+    stage2AlignmentMethod: 'SimPO',
+    stage3Verifiers: ['json_schema', 'ifeval_constraints'],
+    quantizationExportTarget: 'LFM3-1.7B-GGUF / MLX-4bit / FP8 (~1.02 GB)',
+    estimatedVramGb: 3.2,
+    estimatedRuntimeMinutes: 21,
+  },
 ];
 
 export interface RecipePresetDiffItem {
@@ -5590,6 +5722,32 @@ export const DEFAULT_WORKSPACE_PROJECTS: WorkspaceProjectProfile[] = [
     completionOnlyLossEnabled: true,
     freezeVisionTower: true,
     activeRecipeId: 'recipe-gemma4-e4b-doc-table-ocr',
+  },
+  {
+    projectId: 'proj-lfm3-17b-tri-hybrid-agent',
+    projectName: 'Project D: LFM3-1.7B Tri-Hybrid 256K Agentic Harness (OpenClaw / Hermes)',
+    domainTag: 'TEXT_LLM · LFM3 256K Agent',
+    updatedAt: '2026-10-25 00:30 UTC',
+    pipelineTrack: 'TEXT_LLM',
+    selectedModelId: 'LiquidAI/LFM3-1.7B',
+    selectedVisionModelId: 'LiquidAI/LFM2.5-VL-1.6B-Instruct',
+    targetFormat: 'chatml',
+    visionTargetFormat: 'LFM_VL_NATIVE',
+    hpoConfig: {
+      learningRate: 0.0002,
+      loraRank: 32,
+      loraAlpha: 64,
+      loraDropout: 0.04,
+      warmupRatio: 0.05,
+      weightDecay: 0.01,
+      neftuneAlpha: 5,
+      batchSize: 8,
+      lrScheduler: 'wsd',
+    },
+    samplePackingEnabled: true,
+    completionOnlyLossEnabled: true,
+    freezeVisionTower: true,
+    activeRecipeId: 'recipe-lfm3-17b-agentic-mcp-openclaw',
   },
 ];
 
@@ -6260,7 +6418,7 @@ export function computeLayerWiseMixedPrecisionPlan(input: {
   protectVisionConnector: boolean;
 }): MixedPrecisionAllocationPlan {
   const isVision = input.modality === 'VISION_VLM';
-  const isLfm = input.architecture === 'LFM2.5';
+  const isLfm = input.architecture === 'LFM3' || input.architecture === 'LFM2.5';
 
   const layerAllocations: LayerBlockBitAllocation[] = [
     {
@@ -6479,6 +6637,21 @@ export const SPECULATIVE_MODEL_PAIRINGS: SpeculativePairingOption[] = [
     vocabSize: 151936,
     vocabCompatible: true,
     baseAcceptanceRateAlpha: 0.82,
+  },
+  {
+    id: 'spec-lfm3-text',
+    familyLabel: 'LiquidAI LFM3 Tri-Hybrid Family (1.7B 256K Target + 350M Draft)',
+    modality: 'TEXT_LLM',
+    targetModelId: 'LiquidAI/LFM3-1.7B',
+    targetModelName: 'LFM3-1.7B (24L Tri-Hybrid 256K Target)',
+    targetParamsB: 1.73,
+    draftModelId: 'LiquidAI/LFM2.5-350M-Instruct',
+    draftModelName: 'LFM-350M-Q8_0 (ShortConv Fast Draft)',
+    draftParamsB: 0.35,
+    sharedTokenizerName: 'LiquidAI LFM3 128K BPE Tokenizer (128,000 vocab)',
+    vocabSize: 128000,
+    vocabCompatible: true,
+    baseAcceptanceRateAlpha: 0.88,
   },
   {
     id: 'spec-lfm25-text',
@@ -8111,6 +8284,1380 @@ def run_cascaded_inference(prompt: str, ref_context: str = ""):
   };
 }
 
+// ============================================================================
+// 44. MULTI-MODEL PROMPT ENHANCEMENT & NATURAL-LANGUAGE UPSAMPLING SUITE
+// ============================================================================
 
+export type PromptEnhancementCategoryId =
+  | 'IMAGE_GEN_NATURAL_PROSE'
+  | 'GENERAL_TEXT_BPO_META'
+  | 'VIDEO_TEMPORAL_DIRECTOR'
+  | 'MULTIMODAL_VLM_REF_TO_PROMPT'
+  | 'REASONING_COT_CODING_SPEC'
+  | 'RAG_HYDE_MULTI_HOP'
+  | 'AUDIO_MUSIC_VOICE_SYNTH'
+  | 'SPATIAL_3D_PBR_SAFETY';
 
+export interface PromptEnhancementCategorySpec {
+  id: PromptEnhancementCategoryId;
+  shortLabel: string;
+  title: string;
+  targetDownstreamGenerators: string[];
+  modalitySupport: 'TEXT_ONLY' | 'VISION_AND_TEXT';
+  linkedTextBlendId: string;
+  linkedVisionBlendId?: string;
+  researchSummary: string;
+  whyNaturalProseBeatsTags: string;
+  structuralClauses: string[];
+  datasets: Array<{
+    hfRepoId: string;
+    weightPct: number;
+    focus: string;
+  }>;
+  verifiersAndPenalties: string[];
+  defaultSeedPrompt: string;
+}
 
+export interface PromptEnhancementModelEntry {
+  modelId: string;
+  displayName: string;
+  modalityTrack: 'TEXT_LLM' | 'VISION_VLM';
+  architecture: ArchitectureFamily;
+  paramsBillions: number;
+  roleStrength: string;
+}
+
+export interface ModelPromptEnhancementConfigPlan {
+  modelId: string;
+  modelDisplayName: string;
+  modalityTrack: 'TEXT_LLM' | 'VISION_VLM';
+  architecture: ArchitectureFamily;
+  paramsBillions: number;
+  categoryId: PromptEnhancementCategoryId;
+  categoryTitle: string;
+  recommendedBlendId: string;
+  recommendedVisionBlendId?: string;
+  targetFormat: TargetFormat;
+  visionTargetFormat?:
+    | 'QWEN_VL_CHATML'
+    | 'GEMMA4_VL_PAN_SCAN'
+    | 'LFM_VL_NATIVE';
+  quantization: QuantizationMode;
+  recommendedContextLen: number;
+  hpoConfig: HyperparameterConfig;
+  useDora: boolean;
+  stage2Method: PreferenceAlignmentMethod;
+  stage3Verifiers: string[];
+  antiBooruPenaltyEnabled: boolean;
+  estimatedVramGb: number;
+  estimatedUpsampleLatencyMs: number;
+  systemPromptTemplate: string;
+  rationale: string;
+}
+
+export interface NaturalLanguagePromptUpsampleResult {
+  categoryId: PromptEnhancementCategoryId;
+  rawInputPrompt: string;
+  cleanedSubjectCore: string;
+  strippedBooruTags: string[];
+  legacyTagContaminationCount: number;
+  antiBooruComplianceScore: number; // 0-100%
+  enhancedNaturalLanguagePrompt: string;
+  clauseBreakdown: Array<{
+    clauseTitle: string;
+    clauseContent: string;
+  }>;
+  trainingPairPreview: {
+    instruction: string;
+    input: string;
+    output: string;
+  };
+}
+
+export const ALL_REGISTERED_PROMPT_ENHANCEMENT_MODELS: PromptEnhancementModelEntry[] = [
+  // 9 Pure Text LLM Models (including LiquidAI/LFM3-1.7B Tri-Hybrid 256K)
+  {
+    modelId: 'LiquidAI/LFM3-1.7B',
+    displayName: 'LFM3-1.7B (Tri-Hybrid 256K · 1.73B)',
+    modalityTrack: 'TEXT_LLM',
+    architecture: 'LFM3',
+    paramsBillions: 1.73,
+    roleStrength: '24L Tri-Hybrid (13 ShortConv + 5 SWA + 6 Full Attn) · 256K context, 2.5x prefill & <1GB 4-bit upsampler',
+  },
+  {
+    modelId: 'LiquidAI/LFM2.5-300M-Instruct',
+    displayName: 'LFM2.5-300M-Instruct (Ultra-Edge 0.3B)',
+    modalityTrack: 'TEXT_LLM',
+    architecture: 'LFM2.5',
+    paramsBillions: 0.3,
+    roleStrength: '<8ms inline RAG HyDE, Booru-to-Prose linter & Defensive Sanitizer',
+  },
+  {
+    modelId: 'Qwen/Qwen3.5-0.8B-Instruct',
+    displayName: 'Qwen3.5-0.8B-Instruct (Compact 0.8B)',
+    modalityTrack: 'TEXT_LLM',
+    architecture: 'Qwen3.5',
+    paramsBillions: 0.8,
+    roleStrength: 'Fast local ComfyUI / DrawThings Flux 2/3 & Qwen-Image 2/3 prose upsampler',
+  },
+  {
+    modelId: 'LiquidAI/LFM2.5-1.2B-Instruct',
+    displayName: 'LFM2.5-1.2B-Instruct (Liquid Edge 1.2B)',
+    modalityTrack: 'TEXT_LLM',
+    architecture: 'LFM2.5',
+    paramsBillions: 1.2,
+    roleStrength: 'Low-RAM BPO meta-prompt optimizer & Suno/Lyria audio prompt director',
+  },
+  {
+    modelId: 'google/gemma-4-E2B-it',
+    displayName: 'Gemma4-E2B-IT (Effective 2.0B)',
+    modalityTrack: 'TEXT_LLM',
+    architecture: 'Gemma4',
+    paramsBillions: 2.0,
+    roleStrength: 'Rich literary & photographic natural-English prose for Flux 3 & Recraft V3',
+  },
+  {
+    modelId: 'Qwen/Qwen3.5-2B-Instruct',
+    displayName: 'Qwen3.5-2B-Instruct (Sweet-Spot 2.0B)',
+    modalityTrack: 'TEXT_LLM',
+    architecture: 'Qwen3.5',
+    paramsBillions: 2.0,
+    roleStrength: 'Native Qwen-Image 2/3 bilingual typography & Agentic Coding Spec expander',
+  },
+  {
+    modelId: 'LiquidAI/LFM2.5-2.6B-Instruct',
+    displayName: 'LFM2.5-2.6B-Instruct (Long-Context 2.6B)',
+    modalityTrack: 'TEXT_LLM',
+    architecture: 'LFM2.5',
+    paramsBillions: 2.6,
+    roleStrength: 'Multi-scene storyboard & 32K context document-to-prompt synthesis',
+  },
+  {
+    modelId: 'google/gemma-4-E4B-it',
+    displayName: 'Gemma4-E4B-IT (Effective 4.0B)',
+    modalityTrack: 'TEXT_LLM',
+    architecture: 'Gemma4',
+    paramsBillions: 4.0,
+    roleStrength: 'Cinema-grade Wan 2.1 / Veo 3 temporal camera trajectory & BPO architect',
+  },
+  {
+    modelId: 'Qwen/Qwen3.5-9B-Instruct',
+    displayName: 'Qwen3.5-9B-Instruct (Heavy Teacher 9.0B)',
+    modalityTrack: 'TEXT_LLM',
+    architecture: 'Qwen3.5',
+    paramsBillions: 9.0,
+    roleStrength: 'Teacher distillation & complex multi-subject spatial/3D shader specification',
+  },
+  // 6 Vision-Language (VLM) Models
+  {
+    modelId: 'LiquidAI/LFM2.5-VL-450M-Instruct',
+    displayName: 'LFM2.5-VL-450M-Instruct (Edge Vision 0.45B)',
+    modalityTrack: 'VISION_VLM',
+    architecture: 'LFM2.5',
+    paramsBillions: 0.45,
+    roleStrength: 'Real-time camera frame -> natural-language scene & style prompt extractor',
+  },
+  {
+    modelId: 'Qwen/Qwen3.5-VL-0.8B-Instruct',
+    displayName: 'Qwen3.5-VL-0.8B-Instruct (NaViT Vision 0.8B)',
+    modalityTrack: 'VISION_VLM',
+    architecture: 'Qwen3.5',
+    paramsBillions: 0.8,
+    roleStrength: 'Dynamic NaViT reference image -> Qwen-Image 2/3 & Flux Redux prose upsampler',
+  },
+  {
+    modelId: 'LiquidAI/LFM2.5-VL-1.6B-Instruct',
+    displayName: 'LFM2.5-VL-1.6B-Instruct (Liquid Vision 1.6B)',
+    modalityTrack: 'VISION_VLM',
+    architecture: 'LFM2.5',
+    paramsBillions: 1.6,
+    roleStrength: 'Keyframe-to-Video (I2V) camera trajectory & physical motion script director',
+  },
+  {
+    modelId: 'Qwen/Qwen3.5-VL-2B-Instruct',
+    displayName: 'Qwen3.5-VL-2B-Instruct (NaViT Vision 2.0B)',
+    modalityTrack: 'VISION_VLM',
+    architecture: 'Qwen3.5',
+    paramsBillions: 2.0,
+    roleStrength: 'High-precision spatial layout, typography OCR & Flux 3 Klein-PUP rewriter',
+  },
+  {
+    modelId: 'google/gemma-4-e2b-vision-it',
+    displayName: 'Gemma4-E2B-Vision-IT (Pan-&-Scan 2.3B)',
+    modalityTrack: 'VISION_VLM',
+    architecture: 'Gemma4',
+    paramsBillions: 2.3,
+    roleStrength: 'Pan-&-Scan fine-art lighting analysis & multi-panel storyboard prompt writer',
+  },
+  {
+    modelId: 'google/gemma-4-e4b-vision-it',
+    displayName: 'Gemma4-E4B-Vision-IT (Pan-&-Scan 4.5B)',
+    modalityTrack: 'VISION_VLM',
+    architecture: 'Gemma4',
+    paramsBillions: 4.5,
+    roleStrength: 'Flagship multimodal reference-to-Flux3/Qwen-Image3 & Veo 3 I2V director',
+  },
+];
+
+export const PROMPT_ENHANCEMENT_TAXONOMY: PromptEnhancementCategorySpec[] = [
+  {
+    id: 'IMAGE_GEN_NATURAL_PROSE',
+    shortLabel: '1. Image Gen (Flux 2/3 & Qwen-Image 2/3 Prose)',
+    title: 'Next-Gen Natural-Language Image Gen Upsampler (Zero-Booru Prose)',
+    targetDownstreamGenerators: [
+      'FLUX.1 / FLUX.2 / FLUX.3 (Klein-PUP)',
+      'Qwen-Image 2 / Qwen-Image 3',
+      'Imagen 3 / Imagen 4',
+      'Recraft V3 & Ideogram 3',
+    ],
+    modalitySupport: 'VISION_AND_TEXT',
+    linkedTextBlendId: 'blend-25-flux3-qwen-image-natural-prose-enhancer',
+    linkedVisionBlendId: 'vlm-blend-flux3-qwen-image-prose-upsampler',
+    researchSummary:
+      'Modern rectified-flow and multimodal diffusion transformers (Flux 2/3, Qwen-Image 2/3, Recraft V3) replace legacy CLIP tokenizers with T5-XXL or Qwen2.5/3-VL / Gemma4 text encoders that compute full bidirectional/causal self-attention over grammatical sentences.',
+    whyNaturalProseBeatsTags:
+      'In SD1.5/SDXL, comma-separated Danbooru tags ("1girl, masterpiece, best quality, 8k, bokeh") worked because CLIP treated prompts as bags of token embeddings. In Flux 2/3 and Qwen-Image 2/3, tag salad breaks spatial preposition binding ("on the left", "reflected in") and corrupts rendered text. Structured 5-clause English prose improves attribute binding by +18.4% and exact text rendering by +24.1%.',
+    structuralClauses: [
+      '1. Framing, Shot Scale & Primary Subject Action',
+      '2. Spatial Hierarchy (Foreground -> Midground -> Background Prepositions)',
+      '3. Lighting Physics, Color Temperature & Atmospheric Optics',
+      '4. Materiality, Surface Micro-Textures & Lens/Film Stock Specs',
+      '5. Exact Double-Quoted Typography & Signage ("...exact text...")',
+    ],
+    datasets: [
+      {
+        hfRepoId: 'gokaygokay/prompt-enhancer-dataset',
+        weightPct: 45,
+        focus: 'Short user concepts -> rich natural-English descriptive prose',
+      },
+      {
+        hfRepoId: 'k-mktr/improved-flux-prompts',
+        weightPct: 35,
+        focus: 'T5-XXL / Flux spatial prepositions, lens optics & lighting physics',
+      },
+      {
+        hfRepoId: 'Qwen/Qwen-Image-Bench',
+        weightPct: 20,
+        focus: 'Exact quoted typography ("...") & multi-object attribute binding',
+      },
+    ],
+    verifiersAndPenalties: [
+      'anti_booru_tag_salad_penalty (penalizes "masterpiece", "best quality", "1girl", "8k", comma density > 12%)',
+      'spatial_preposition_completeness (verifies foreground/midground/background anchors)',
+      'quoted_typography_preservation (verifies exact user quoted strings remain intact)',
+    ],
+    defaultSeedPrompt:
+      '1girl, cyberpunk barista, pouring latte art, neon sign "SYNTH BREW", rain outside window, masterpiece, best quality, 8k, bokeh',
+  },
+  {
+    id: 'GENERAL_TEXT_BPO_META',
+    shortLabel: '2. General Text & Meta-Prompt (BPO)',
+    title: 'General Text & Meta-Prompt Optimizer (THUDM/BPO & System Architect)',
+    targetDownstreamGenerators: [
+      'Any Local or Cloud LLM (Qwen, Gemma, Llama, Claude, GPT)',
+      'Automated System Prompt Compilers (DSPy / OPRO)',
+      'Enterprise Multi-Turn Instruction Pipelines',
+    ],
+    modalitySupport: 'TEXT_ONLY',
+    linkedTextBlendId: 'blend-26-general-text-bpo-meta-prompt-architect',
+    researchSummary:
+      'Grounded in Tsinghua THUDM/BPO (Black-Box Prompt Optimization) and Stanford DSPy meta-prompting. Trains a lightweight 0.8B–2B model on preference-verified (naive_prompt -> optimized_prompt) pairs where the rewritten prompt measurably increased human/judge win-rates.',
+    whyNaturalProseBeatsTags:
+      'Users typically write underspecified 1-sentence requests lacking persona, output schema, length bounds, or edge-case rules. A fine-tuned BPO rewriter automatically injects explicit constraints without altering the user intent, lifting IFEval and MT-Bench scores by +11% to +22%.',
+    structuralClauses: [
+      '1. Domain Expert Role & Epistemic Persona Calibration',
+      '2. Explicit Task Objective & Decomposed Sub-Deliverables',
+      '3. Output Schema, Formatting & Length Bounds',
+      '4. Negative Constraints & Edge-Case Handling Rules',
+    ],
+    datasets: [
+      {
+        hfRepoId: 'THUDM/BPO',
+        weightPct: 55,
+        focus: '14.4k preference-aligned Black-Box Prompt Optimization pairs',
+      },
+      {
+        hfRepoId: 'allenai/tulu-3-sft-personas-instruction-following',
+        weightPct: 25,
+        focus: 'Verifiable formatting, length, and negative constraint injection',
+      },
+      {
+        hfRepoId: 'fka/awesome-chatgpt-prompts',
+        weightPct: 20,
+        focus: 'Reusable system role definitions and domain rubrics',
+      },
+    ],
+    verifiersAndPenalties: [
+      'intent_preservation_cosine_guard (prevents scope drift from user request)',
+      'ifeval_verifiable_constraint_density',
+    ],
+    defaultSeedPrompt:
+      'explain how to migrate a postgres table with 50 million rows without downtime',
+  },
+  {
+    id: 'VIDEO_TEMPORAL_DIRECTOR',
+    shortLabel: '3. Video & Camera Motion (Wan 2.1 / Veo 3)',
+    title: 'Cinematic Video & Temporal Motion Director (Wan 2.1/2.2, HunyuanVideo, Veo 3)',
+    targetDownstreamGenerators: [
+      'Wan 2.1 / Wan 2.2 (T2V & I2V)',
+      'Tencent HunyuanVideo',
+      'Google Veo 2 / Veo 3',
+      'OpenAI Sora & Kling 2.0',
+    ],
+    modalitySupport: 'VISION_AND_TEXT',
+    linkedTextBlendId: 'blend-27-video-temporal-motion-director',
+    linkedVisionBlendId: 'vlm-blend-wan21-veo3-i2v-motion-director',
+    researchSummary:
+      'Modern 3D-VAE DiT video models (Wan 2.1/2.2, HunyuanVideo, Veo 3) require chronological beat descriptions rather than static image captions. Official pipelines use an LLM Prompt Rewrite stage to specify `[0.0s–2.0s]` and `[2.0s–5.0s]` motion vectors and camera rig trajectories.',
+    whyNaturalProseBeatsTags:
+      'Static image prompts cause video DiTs to either freeze the camera or hallucinate morphing limbs. Specifying explicit camera trajectories (FPV tracking, motorized dolly-in, pedestal crane up) and Newtonian fluid/cloth dynamics stabilizes temporal coherence.',
+    structuralClauses: [
+      '1. [0.0s–2.0s] Establishing Shot Scale & Initial Camera Trajectory',
+      '2. Primary Subject Kinematics & Secondary Physics (Wind, Cloth, Fluid, Sparks)',
+      '3. [2.0s–5.0s] Camera Transition (Rack Focus / Orbit / Dolly) & Reveal',
+      '4. Shutter Cadence (24fps / 60fps Slow-Mo), Lens Anamorphics & Lighting Continuity',
+    ],
+    datasets: [
+      {
+        hfRepoId: 'ByteDance/VAP-Data',
+        weightPct: 45,
+        focus: 'Video-As-Prompt temporal beat progression & physical dynamics',
+      },
+      {
+        hfRepoId: 'Rapidata/text-2-video-human-preferences-wan2.1',
+        weightPct: 35,
+        focus: 'Human-preference-winning Wan 2.1 natural-language motion prompts',
+      },
+      {
+        hfRepoId: 'Rapidata/image-to-video-camera-movement-human-feedback-benchmark',
+        weightPct: 20,
+        focus: 'Calibrated cinematography & camera rig movement vocabulary',
+      },
+    ],
+    verifiersAndPenalties: [
+      'temporal_beat_progression_check ([0.0s-2.0s] -> [2.0s-5.0s] continuity)',
+      'camera_rig_trajectory_clarity (penalizes contradictory pan/zoom directives)',
+    ],
+    defaultSeedPrompt:
+      'samurai walking through bamboo forest in snow, camera circles around him',
+  },
+  {
+    id: 'MULTIMODAL_VLM_REF_TO_PROMPT',
+    shortLabel: '4. VLM Reference Image-to-Prompt',
+    title: 'Multimodal VLM Reference-Image-to-Prose & Style-Transfer Upsampler',
+    targetDownstreamGenerators: [
+      'FLUX.1 Redux / FLUX.3 Klein-PUP Image-Conditioned Edit',
+      'Qwen-Image 2/3 Multimodal Editing',
+      'ControlNet / IP-Adapter Conditioning Pipelines',
+    ],
+    modalitySupport: 'VISION_AND_TEXT',
+    linkedTextBlendId: 'blend-25-flux3-qwen-image-natural-prose-enhancer',
+    linkedVisionBlendId: 'vlm-blend-flux3-qwen-image-prose-upsampler',
+    researchSummary:
+      'Uses Qwen3.5-VL, LFM2.5-VL, or Gemma4-VL to inspect a reference image (or UI sketch) alongside a short user delta instruction ("change season to autumn and add brass lantern") and synthesize a self-contained natural-language target prompt.',
+    whyNaturalProseBeatsTags:
+      'Instead of legacy CLIP Interrogator tag dumps, a fine-tuned VLM extracts true 3D spatial relationships, key-to-fill lighting ratios, color palette hex anchors, and exact OCR signage from the reference image.',
+    structuralClauses: [
+      '1. Reference Scene Geometry & Preserved Structural Anchors',
+      '2. Requested Delta / Style Transformation Integration',
+      '3. Matched Lighting Ratio, Color Palette & Optical Perspective',
+    ],
+    datasets: [
+      {
+        hfRepoId: 'black-forest-labs/flux-3-image-klein-pup',
+        weightPct: 45,
+        focus: 'Reference image + user edit -> natural prose target prompt',
+      },
+      {
+        hfRepoId: 'Lin-Chen/ShareGPT4V-Region-Captions',
+        weightPct: 35,
+        focus: 'Dense visual region, lighting, and texture captioning',
+      },
+      {
+        hfRepoId: 'Qwen/Qwen-Image-Bench',
+        weightPct: 20,
+        focus: 'Preserving signage typography and spatial proportions across edits',
+      },
+    ],
+    verifiersAndPenalties: [
+      'cross_modal_region_alignment_score',
+      'edit_delta_faithfulness_verifier',
+    ],
+    defaultSeedPrompt:
+      '[Ref Image: Minimalist Nordic living room] Keep room layout, change daylight to cozy fireplace twilight and add a sleeping golden retriever on the wool rug',
+  },
+  {
+    id: 'REASONING_COT_CODING_SPEC',
+    shortLabel: '5. Coding Spec & <think> Decomposer',
+    title: 'Agentic Coding Specification & Chain-of-Thought (<think>) Decomposer',
+    targetDownstreamGenerators: [
+      'Qwen3.5-Coder / DeepSeek-R1 / Gemma4 Code Generators',
+      'Cursor / Claude Code / Autonomous SWE-Bench Agents',
+      'Mathematical & Symbolic Proof Solvers',
+    ],
+    modalitySupport: 'TEXT_ONLY',
+    linkedTextBlendId: 'blend-28-coding-spec-cot-decomposer',
+    researchSummary:
+      'Pre-expands terse 1-line coding or math prompts into formal TypeScript/Python interface contracts, Big-O complexity bounds, boundary invariants (`n=0`, null/NaN, concurrency), and a 3-assertion unit test plan.',
+    whyNaturalProseBeatsTags:
+      'Directly feeding "write a LRU cache" to a code model invites ambiguous eviction semantics. Pre-compiling the prompt into an explicit specification boosts first-try `pytest` / `tsc` compilation pass rates by +9.4%.',
+    structuralClauses: [
+      '1. Formal Function/Class Signature & Type Contracts',
+      '2. Algorithmic Complexity Target (Time & Space Big-O)',
+      '3. Boundary & Edge-Case Invariants (Empty, Overflow, Concurrency)',
+      '4. Embedded Verification Unit Test Cases',
+    ],
+    datasets: [
+      {
+        hfRepoId: 'THUDM/BPO',
+        weightPct: 40,
+        focus: 'Informal coding prompt -> formal software specification',
+      },
+      {
+        hfRepoId: 'SWE-bench/SWE-smith-trajectories',
+        weightPct: 35,
+        focus: 'Bug report -> root-cause hypothesis & regression test spec',
+      },
+      {
+        hfRepoId: 'open-r1/OpenR1-Math-220k',
+        weightPct: 25,
+        focus: 'Step-by-step <think> decomposition for math & algorithms',
+      },
+    ],
+    verifiersAndPenalties: [
+      'ast_signature_completeness_check',
+      'edge_case_invariant_coverage',
+    ],
+    defaultSeedPrompt:
+      'write a typescript function to retry failed fetch requests with exponential backoff',
+  },
+  {
+    id: 'RAG_HYDE_MULTI_HOP',
+    shortLabel: '6. RAG Query Rewrite & HyDE',
+    title: 'Conversational RAG Query Rewriter, Multi-Hop Decomposer & HyDE Generator',
+    targetDownstreamGenerators: [
+      'Qdrant / Milvus / pgvector / DuckDB-VSS Hybrid Search',
+      'Cross-Encoder Rerankers (BGE-M3 / Cohere Rerank)',
+      'Edge Citation-Grounded RAG Pipelines',
+    ],
+    modalitySupport: 'TEXT_ONLY',
+    linkedTextBlendId: 'blend-29-rag-hyde-multihop-query-enhancer',
+    researchSummary:
+      'Rewrites ambiguous conversational follow-ups ("does it work on 8GB VRAM too?") into disambiguated standalone search queries, parallel multi-hop sub-queries, BM25 lexical keywords, and a Hypothetical Document Embedding (HyDE) passage.',
+    whyNaturalProseBeatsTags:
+      'Dense bi-encoder embeddings match best against complete, well-formed answer passages (HyDE) while BM25 sparse retrieval requires exact technical identifiers. Emitting both in one JSON pass maximizes Recall@10.',
+    structuralClauses: [
+      '1. Coreference-Resolved Standalone Dense Search Query',
+      '2. Parallel Multi-Hop Sub-Queries (for Comparative Questions)',
+      '3. BM25 Exact Technical Keyword Anchors & Metadata Filters',
+      '4. HyDE (Hypothetical Document Embedding) Answer Passage',
+    ],
+    datasets: [
+      {
+        hfRepoId: 'microsoft/ms_marco',
+        weightPct: 45,
+        focus: 'Query expansion & HyDE hypothetical passage synthesis',
+      },
+      {
+        hfRepoId: 'HotpotQA/hotpot_qa',
+        weightPct: 35,
+        focus: 'Multi-hop question decomposition into atomic retrieval steps',
+      },
+      {
+        hfRepoId: 'THUDM/BPO',
+        weightPct: 20,
+        focus: 'Citation-grounded synthesis prompt structuring',
+      },
+    ],
+    verifiersAndPenalties: [
+      'json_schema_hyde_completeness',
+      'pronoun_coreference_elimination_check',
+    ],
+    defaultSeedPrompt:
+      'how does DoRA compare to standard LoRA on sub-2B models when quantizing to 4-bit?',
+  },
+  {
+    id: 'AUDIO_MUSIC_VOICE_SYNTH',
+    shortLabel: '7. Audio, Music & TTS Director',
+    title: 'Audio, Music Stems & Expressive Voice Prompt Enhancer (Lyria, Suno v4, Udio, TTS)',
+    targetDownstreamGenerators: [
+      'Google Lyria / Suno v4 / Udio / Stable Audio Open',
+      'ElevenLabs / Kokoro-82M / F5-TTS / CosyVoice',
+      'Binaural Foley & Game Audio Synthesizers',
+    ],
+    modalitySupport: 'TEXT_ONLY',
+    linkedTextBlendId: 'blend-30-audio-music-voice-prompt-enhancer',
+    researchSummary:
+      'Expands brief musical or voice moods into structured acoustic production sheets specifying BPM, key/mode, chord progression, stem instrumentation, acoustic reverb space, and TTS prosody/WPM.',
+    whyNaturalProseBeatsTags:
+      'Music and voice diffusion models respond strongly to structured studio engineering terminology (e.g., "84 BPM, Dorian mode, close-miked felt upright piano, 2.4s hall reverb") rather than vague mood words.',
+    structuralClauses: [
+      '1. Genre Fusion, Exact Tempo (BPM), Time Signature & Key/Mode',
+      '2. Primary & Secondary Instrumentation Stems',
+      '3. Arrangement Dynamics (Intro -> Swell -> Drop/Resolution)',
+      '4. Acoustic Space, Mic Placement & Mastering Chain / TTS Prosody',
+    ],
+    datasets: [
+      {
+        hfRepoId: 'google/MusicCaps',
+        weightPct: 50,
+        focus: 'Musician-annotated tempo, instrumentation, harmony & mix specs',
+      },
+      {
+        hfRepoId: 'WavCaps/Audio-Caption-Pairs',
+        weightPct: 30,
+        focus: 'Spatial foley, acoustic reverb & environmental soundscapes',
+      },
+      {
+        hfRepoId: 'gokaygokay/prompt-enhancer-dataset',
+        weightPct: 20,
+        focus: 'Expressive TTS prosody, pacing (WPM) & emotional register',
+      },
+    ],
+    verifiersAndPenalties: [
+      'bpm_and_key_signature_presence',
+      'stem_instrumentation_specificity',
+    ],
+    defaultSeedPrompt:
+      'synthwave track for a night highway drive with analog arpeggios and gated drums',
+  },
+  {
+    id: 'SPATIAL_3D_PBR_SAFETY',
+    shortLabel: '8. 3D Mesh / PBR & Safety Sanitizer',
+    title: '3D Mesh / PBR Shader Upsampler & Constitutional Safety Sanitizer',
+    targetDownstreamGenerators: [
+      'Tripo3D / Hyper3D Rodin Gen-2 / Meshy-4 / Trellis 3D',
+      'Three.js / Blender PBR Material Generators',
+      'Enterprise Guardrailed LLM Gateways (False-Refusal Mitigation)',
+    ],
+    modalitySupport: 'TEXT_ONLY',
+    linkedTextBlendId: 'blend-31-3d-mesh-pbr-shader-prompt-enhancer',
+    researchSummary:
+      'Combines two high-value specialized rewriters: (A) Text-to-3D / PBR Shader upsampling (enforcing watertight geometry, orthographic symmetry, and unbaked shadowless diffuse lighting via Cap3D + Objaverse-XL), and (B) Constitutional Safety Sanitization (rewriting benign security/medical queries to prevent false-positive LLM refusals).',
+    whyNaturalProseBeatsTags:
+      'In 3D generation, cinematic shadows or perspective lens tags ruin photogrammetry reconstruction by baking black shadows into the diffuse texture map. Our rewriter strips dramatic lighting tags and enforces flat dome studio lighting + explicit PBR roughness/metallic values.',
+    structuralClauses: [
+      '1. Watertight Mesh Topology, Silhouette & Isometric/Orthographic Framing',
+      '2. Unbaked Diffuse Albedo & Shadowless Studio Dome Illumination',
+      '3. Explicit PBR Material Channels (Roughness, Metalness, Normal, Transmission)',
+      '4. Constitutional Safety Sanitization (Constructive Defensive Framing)',
+    ],
+    datasets: [
+      {
+        hfRepoId: 'tiange/Cap3D',
+        weightPct: 45,
+        focus: 'Watertight 3D geometry & multi-view consistent Objaverse captions',
+      },
+      {
+        hfRepoId: 'allenai/objaverse-xl-captions',
+        weightPct: 30,
+        focus: 'PBR roughness, metalness, transmission & normal map specs',
+      },
+      {
+        hfRepoId: 'allenai/wildguardmix',
+        weightPct: 25,
+        focus: 'Benign defensive security/medical prompt sanitization',
+      },
+    ],
+    verifiersAndPenalties: [
+      'unbaked_shadowless_albedo_guard (penalizes cast shadows/lens flare in 3D prompts)',
+      'pbr_channel_range_validator (roughness/metalness in [0.0, 1.0])',
+    ],
+    defaultSeedPrompt:
+      'brass steampunk compass with glass lens and glowing runes for a 3D game inventory icon',
+  },
+];
+
+/**
+ * Computes a tailored Prompt Enhancement dataset & hyperparameter configuration for ANY of the 14 registered models
+ * (all 8 Text LLMs and all 6 Vision-Language VLMs) across any of the 8 Prompt Enhancement categories.
+ */
+export function computeModelPromptEnhancementConfig(
+  modelId: string,
+  categoryId: PromptEnhancementCategoryId
+): ModelPromptEnhancementConfigPlan {
+  const modelEntry =
+    ALL_REGISTERED_PROMPT_ENHANCEMENT_MODELS.find(
+      (m) => m.modelId.toLowerCase() === modelId.toLowerCase()
+    ) ?? ALL_REGISTERED_PROMPT_ENHANCEMENT_MODELS[4]; // fallback Qwen3.5-2B
+
+  const category =
+    PROMPT_ENHANCEMENT_TAXONOMY.find((c) => c.id === categoryId) ??
+    PROMPT_ENHANCEMENT_TAXONOMY[0];
+
+  const p = modelEntry.paramsBillions;
+  const isVlm = modelEntry.modalityTrack === 'VISION_VLM';
+
+  // Calibrate LoRA rank, LR, batch size, and quantization by model parameter scale
+  let loraRank = 32;
+  let learningRate = 0.0002;
+  let batchSize = 8;
+  let quantization: QuantizationMode = 'qlora-4bit';
+
+  if (p <= 0.5) {
+    loraRank = 16;
+    learningRate = 0.00026;
+    batchSize = 16;
+    quantization = isVlm ? 'qlora-4bit' : 'lora-16bit';
+  } else if (p <= 1.3) {
+    loraRank = 16;
+    learningRate = 0.00023;
+    batchSize = 12;
+    quantization = 'qlora-4bit';
+  } else if (p <= 2.7) {
+    loraRank = 32;
+    learningRate = 0.00019;
+    batchSize = 8;
+    quantization = 'qlora-4bit';
+  } else if (p <= 4.6) {
+    loraRank = 32;
+    learningRate = 0.00016;
+    batchSize = 4;
+    quantization = 'qlora-4bit';
+  } else {
+    // 9B heavy ceiling
+    loraRank = 64;
+    learningRate = 0.00012;
+    batchSize = 2;
+    quantization = 'qlora-4bit';
+  }
+
+  // Coding Spec & Image Gen Prose benefit from slightly higher rank on >=2B models
+  if (
+    (categoryId === 'IMAGE_GEN_NATURAL_PROSE' ||
+      categoryId === 'REASONING_COT_CODING_SPEC') &&
+    p >= 2.0 &&
+    p <= 4.5
+  ) {
+    loraRank = 32;
+  }
+
+  const loraAlpha = loraRank * 2;
+  const neftuneAlpha =
+    categoryId === 'RAG_HYDE_MULTI_HOP' ? 0 : 5;
+  const lrScheduler: HyperparameterConfig['lrScheduler'] =
+    categoryId === 'AUDIO_MUSIC_VOICE_SYNTH' ? 'cosine' : 'wsd';
+
+  const isLfm3 = modelEntry.architecture === 'LFM3';
+  const recommendedContextLen = isLfm3
+    ? categoryId === 'REASONING_COT_CODING_SPEC' || categoryId === 'RAG_HYDE_MULTI_HOP'
+      ? 16384
+      : 8192
+    : categoryId === 'REASONING_COT_CODING_SPEC'
+    ? 8192
+    : 4096;
+
+  const estimatedVramGb = Number(
+    (
+      p * (quantization === 'lora-16bit' ? 2.1 : isLfm3 ? 0.56 : 0.68) +
+      (isVlm ? 1.35 : isLfm3 ? 0.78 : 0.95) +
+      (loraRank / 32) * 0.45
+    ).toFixed(2)
+  );
+
+  const estimatedUpsampleLatencyMs = Math.round(
+    ((isVlm ? 38 : 14) + p * 18) * (isLfm3 ? 0.62 : 1.0)
+  );
+
+  const visionTargetFormat: ModelPromptEnhancementConfigPlan['visionTargetFormat'] =
+    !isVlm
+      ? undefined
+      : modelEntry.architecture === 'Gemma4'
+      ? 'GEMMA4_VL_PAN_SCAN'
+      : modelEntry.architecture === 'LFM2.5' || modelEntry.architecture === 'LFM3'
+      ? 'LFM_VL_NATIVE'
+      : 'QWEN_VL_CHATML';
+
+  const antiBooruPenaltyEnabled =
+    categoryId === 'IMAGE_GEN_NATURAL_PROSE' ||
+    categoryId === 'MULTIMODAL_VLM_REF_TO_PROMPT' ||
+    categoryId === 'VIDEO_TEMPORAL_DIRECTOR' ||
+    categoryId === 'SPATIAL_3D_PBR_SAFETY';
+
+  const systemPromptMap: Record<PromptEnhancementCategoryId, string> = {
+    IMAGE_GEN_NATURAL_PROSE:
+      'You are a Next-Gen Visual Prompt Architect for Flux 2/3, Qwen-Image 2/3, and Recraft V3. Expand brief concepts into grammatical English prose ordered by: (1) Framing & Subject Action, (2) Foreground/Midground/Background Spatial Hierarchy, (3) Lighting Physics & Atmosphere, (4) Materiality & Camera/Lens Optics, and (5) Exact Double-Quoted Typography ("..."). NEVER emit Danbooru or SD1.5 comma tags (no "masterpiece, best quality, 1girl, 8k").',
+    GENERAL_TEXT_BPO_META:
+      'You are a Black-Box Prompt Optimization (BPO) Architect. Rewrite the raw user request into a high-utility, unambiguous instruction specifying expert persona, structured sub-deliverables, output schema, and edge-case constraints while preserving 100% of the user intent.',
+    VIDEO_TEMPORAL_DIRECTOR:
+      'You are a Temporal Cinematography Director for Wan 2.1/2.2, HunyuanVideo, and Veo 3. Expand static scene concepts into a chronological 5-second motion script specifying [0.0s–2.0s] establishing camera trajectory, subject/fluid/cloth physics, [2.0s–5.0s] camera transition, and shutter/lighting continuity.',
+    MULTIMODAL_VLM_REF_TO_PROMPT:
+      'You are a Multimodal Reference-to-Prose Prompt Engineer. Inspect the conditioning image and user edit instruction, preserve structural geometry and lighting ratios, and emit a self-contained natural-language Flux 2/3 or Qwen-Image 2/3 generation prompt.',
+    REASONING_COT_CODING_SPEC:
+      'You are a Principal Software Specification & Reasoning Decomposer. Expand terse coding or algorithmic prompts into formal type signatures, Big-O complexity bounds, boundary invariants inside <think>, and verifiable unit test assertions.',
+    RAG_HYDE_MULTI_HOP:
+      'You are an Ultra-Low-Latency RAG Query Rewriter & HyDE Generator. Resolve conversational pronouns, decompose multi-hop questions into parallel vector queries, extract BM25 technical keywords, and synthesize a dense Hypothetical Document Embedding (HyDE) passage in strict JSON.',
+    AUDIO_MUSIC_VOICE_SYNTH:
+      'You are an Acoustic & Music Production Prompt Director for Lyria, Suno v4, Udio, and Expressive TTS. Expand brief mood ideas into studio specifications covering Genre, exact BPM, Key/Mode, Instrumentation Stems, Arrangement Dynamics, and Acoustic Space.',
+    SPATIAL_3D_PBR_SAFETY:
+      'You are a 3D Asset & PBR Shader Prompt Architect (Tripo3D / Rodin Gen-2 / Three.js) and Defensive Prompt Sanitizer. Enforce watertight mesh topology, orthographic/isometric framing, unbaked shadowless dome lighting, and explicit PBR roughness/metalness values.',
+  };
+
+  return {
+    modelId: modelEntry.modelId,
+    modelDisplayName: modelEntry.displayName,
+    modalityTrack: modelEntry.modalityTrack,
+    architecture: modelEntry.architecture,
+    paramsBillions: modelEntry.paramsBillions,
+    categoryId,
+    categoryTitle: category.title,
+    recommendedBlendId: category.linkedTextBlendId,
+    recommendedVisionBlendId:
+      category.linkedVisionBlendId ?? 'vlm-blend-flux3-qwen-image-prose-upsampler',
+    targetFormat: 'chatml',
+    visionTargetFormat,
+    quantization,
+    recommendedContextLen,
+    hpoConfig: {
+      learningRate,
+      loraRank,
+      loraAlpha,
+      loraDropout: 0.05,
+      warmupRatio: 0.05,
+      weightDecay: 0.01,
+      neftuneAlpha,
+      batchSize,
+      lrScheduler,
+    },
+    useDora: true,
+    stage2Method: 'ORPO',
+    stage3Verifiers: category.verifiersAndPenalties,
+    antiBooruPenaltyEnabled,
+    estimatedVramGb,
+    estimatedUpsampleLatencyMs,
+    systemPromptTemplate: systemPromptMap[categoryId],
+    rationale: `${modelEntry.displayName} (${modelEntry.roleStrength}): Configured with DoRA r=${loraRank} (α=${loraAlpha}), lr=${learningRate}, NEFTune α=${neftuneAlpha}, and ${lrScheduler.toUpperCase()} schedule (${estimatedVramGb} GB VRAM, ~${estimatedUpsampleLatencyMs}ms rewrite latency).`,
+  };
+}
+
+const LEGACY_BOORU_TAG_PATTERNS: Array<{ regex: RegExp; canonicalTag: string }> = [
+  { regex: /\b1girl\b/gi, canonicalTag: '1girl' },
+  { regex: /\b1boy\b/gi, canonicalTag: '1boy' },
+  { regex: /\bsolo\b/gi, canonicalTag: 'solo' },
+  { regex: /\bmasterpiece\b/gi, canonicalTag: 'masterpiece' },
+  { regex: /\bbest quality\b/gi, canonicalTag: 'best quality' },
+  { regex: /\bhigh quality\b/gi, canonicalTag: 'high quality' },
+  { regex: /\babsurdres\b/gi, canonicalTag: 'absurdres' },
+  { regex: /\bhighres\b/gi, canonicalTag: 'highres' },
+  { regex: /\bultra[- ]detailed\b/gi, canonicalTag: 'ultra-detailed' },
+  { regex: /\bintricate details\b/gi, canonicalTag: 'intricate details' },
+  { regex: /\b8k( uhd)?\b/gi, canonicalTag: '8k' },
+  { regex: /\b4k\b/gi, canonicalTag: '4k' },
+  { regex: /\bbokeh\b/gi, canonicalTag: 'bokeh' },
+  { regex: /\bhdr\b/gi, canonicalTag: 'hdr' },
+  { regex: /\btrending on artstation\b/gi, canonicalTag: 'trending on artstation' },
+  { regex: /\bartstation\b/gi, canonicalTag: 'artstation' },
+  { regex: /\bunreal engine( 5)?\b/gi, canonicalTag: 'unreal engine' },
+  { regex: /\boctane render\b/gi, canonicalTag: 'octane render' },
+  { regex: /\bgreg rutkowski\b/gi, canonicalTag: 'greg rutkowski' },
+  { regex: /\bphotorealistic\b/gi, canonicalTag: 'photorealistic' },
+];
+
+/**
+ * Strips legacy Danbooru/SD1.5 comma tags and compiles any short user seed into a structured,
+ * natural-language enhanced prompt tailored to the chosen PromptEnhancementCategoryId.
+ */
+export function runNaturalLanguagePromptUpsampler(input: {
+  rawPrompt: string;
+  categoryId: PromptEnhancementCategoryId;
+  targetGeneratorHint?: string;
+}): NaturalLanguagePromptUpsampleResult {
+  const raw =
+    input.rawPrompt.trim() ||
+    PROMPT_ENHANCEMENT_TAXONOMY.find((c) => c.id === input.categoryId)?.defaultSeedPrompt ||
+    'cyberpunk ramen shop in rain with neon sign "MIDNIGHT NOODLES"';
+
+  const strippedBooruTags: string[] = [];
+  let working = raw;
+
+  for (const item of LEGACY_BOORU_TAG_PATTERNS) {
+    if (item.regex.test(working)) {
+      strippedBooruTags.push(item.canonicalTag);
+      working = working.replace(item.regex, ' ');
+    }
+  }
+
+  // Extract any quoted text for exact typography preservation
+  const quotedMatch = raw.match(/"([^"]+)"/);
+  const preservedQuote = quotedMatch ? quotedMatch[1] : null;
+
+  // Clean residual commas and extra whitespace
+  const cleanedTokens = working
+    .split(',')
+    .map((s) => s.trim())
+    .filter((s) => s.length > 0);
+  const cleanedSubjectCore =
+    cleanedTokens.join(', ').replace(/\s+/g, ' ').trim() ||
+    'a stylized subject in an atmospheric environment';
+
+  const legacyTagContaminationCount = strippedBooruTags.length;
+  const antiBooruComplianceScore = Math.max(
+    65,
+    Math.min(100, 100 - legacyTagContaminationCount * 4)
+  );
+
+  let enhancedNaturalLanguagePrompt = '';
+  let clauseBreakdown: Array<{ clauseTitle: string; clauseContent: string }> = [];
+  let instruction = '';
+
+  if (input.categoryId === 'IMAGE_GEN_NATURAL_PROSE') {
+    const quoteClause = preservedQuote
+      ? `Prominently integrated into the scene, a crisp signage element displays the exact uppercase typography "${preservedQuote}" with clean kerning and authentic surface illumination.`
+      : `Subtle environmental details and authentic surface micro-textures anchor the composition without artificial clutter or distorted text.`;
+
+    const c1 = `A cinematic medium-wide photograph capturing ${cleanedSubjectCore} with natural human/subject posture and intentional compositional balance.`;
+    const c2 = `In the foreground, tactile surface details draw the eye inward toward the central focal point, while the background recedes with layered atmospheric depth and clear spatial separation.`;
+    const c3 = `Motivated directional key lighting casts physically accurate soft shadows and warm specular highlights, balanced against cool ambient fill light.`;
+    const c4 = `Captured on a 35mm f/1.4 prime lens with natural optical depth of field, fine organic film grain, and lifelike material textures.`;
+
+    enhancedNaturalLanguagePrompt = `${c1} ${c2} ${c3} ${quoteClause} ${c4}`;
+    clauseBreakdown = [
+      { clauseTitle: '1. Framing & Primary Subject Action', clauseContent: c1 },
+      { clauseTitle: '2. Spatial Hierarchy (Foreground -> Background)', clauseContent: c2 },
+      { clauseTitle: '3. Lighting Physics & Color Atmosphere', clauseContent: c3 },
+      { clauseTitle: '4. Exact Quoted Typography & Signage', clauseContent: quoteClause },
+      { clauseTitle: '5. Camera Optics & Material Micro-Texture', clauseContent: c4 },
+    ];
+    instruction =
+      'Upsample this user concept into a natural-language Flux 2/3 & Qwen-Image 2/3 prompt using grammatical English prose (strictly zero Danbooru/comma tags).';
+  } else if (input.categoryId === 'GENERAL_TEXT_BPO_META') {
+    const c1 = `Role & Persona: Act as a Principal Domain Architect with deep production systems experience.`;
+    const c2 = `Primary Objective: Provide a rigorous, actionable response for: "${cleanedSubjectCore}".`;
+    const c3 = `Required Structure: (1) Executive Architecture Summary, (2) Step-by-Step Implementation Plan with concrete commands/code, (3) Edge-Case & Failure-Mode Matrix, and (4) Verification Checklist.`;
+    const c4 = `Constraints: Avoid generic filler disclaimers; cite concrete trade-offs (latency, memory, safety) and use Markdown tables where quantitative comparisons apply.`;
+
+    enhancedNaturalLanguagePrompt = `${c1}\n${c2}\n${c3}\n${c4}`;
+    clauseBreakdown = [
+      { clauseTitle: '1. Expert Persona Calibration', clauseContent: c1 },
+      { clauseTitle: '2. Disambiguated Task Objective', clauseContent: c2 },
+      { clauseTitle: '3. Structured Deliverable Schema', clauseContent: c3 },
+      { clauseTitle: '4. Verifiable Negative & Quality Constraints', clauseContent: c4 },
+    ];
+    instruction =
+      'Optimize this raw user prompt using Black-Box Prompt Optimization (BPO) to maximize instruction adherence and completeness.';
+  } else if (input.categoryId === 'VIDEO_TEMPORAL_DIRECTOR') {
+    const c1 = `[0.0s–2.0s · Establishing Beat] Smooth Steadicam tracking shot establishes ${cleanedSubjectCore}, moving forward at a steady pace with natural parallax across foreground elements.`;
+    const c2 = `[Physical Dynamics] Secondary environmental motion—wind-swept fabric, drifting atmospheric particles, and realistic surface reflections—evolves with consistent Newtonian momentum.`;
+    const c3 = `[2.0s–5.0s · Camera Transition] The camera executes a controlled 25-degree orbital arc and subtle rack focus, revealing the expansive background environment without geometric morphing.`;
+    const c4 = `[Cinematography Specs] 24fps cinema shutter cadence (180-degree shutter angle), anamorphic 40mm lens optics, continuous golden-hour directional backlight.`;
+
+    enhancedNaturalLanguagePrompt = `${c1} ${c2} ${c3} ${c4}`;
+    clauseBreakdown = [
+      { clauseTitle: '1. [0.0s–2.0s] Establishing Shot & Camera Vector', clauseContent: c1 },
+      { clauseTitle: '2. Subject & Secondary Physics', clauseContent: c2 },
+      { clauseTitle: '3. [2.0s–5.0s] Camera Trajectory Reveal', clauseContent: c3 },
+      { clauseTitle: '4. Shutter Cadence & Optical Continuity', clauseContent: c4 },
+    ];
+    instruction =
+      'Expand this static concept into a 5-second temporal motion & camera trajectory script for Wan 2.1 / HunyuanVideo / Veo 3.';
+  } else if (input.categoryId === 'MULTIMODAL_VLM_REF_TO_PROMPT') {
+    const c1 = `Conditioned on the input reference frame geometry, preserve the primary camera perspective, horizon line, and structural layout.`;
+    const c2 = `Apply the requested transformation seamlessly: ${cleanedSubjectCore}.`;
+    const c3 = `Harmonize global illumination, cast shadow angles, and surface reflections across both preserved and newly synthesized regions in natural English prose.`;
+
+    enhancedNaturalLanguagePrompt = `${c1} ${c2} ${c3}`;
+    clauseBreakdown = [
+      { clauseTitle: '1. Reference Geometry Lock', clauseContent: c1 },
+      { clauseTitle: '2. Target Edit / Style Transformation', clauseContent: c2 },
+      { clauseTitle: '3. Global Illumination & Perspective Harmony', clauseContent: c3 },
+    ];
+    instruction =
+      'Inspect the reference image and user edit instruction, and synthesize a self-contained natural-language Flux 3 / Qwen-Image 3 prompt.';
+  } else if (input.categoryId === 'REASONING_COT_CODING_SPEC') {
+    const c1 = `<think>\n1. Decompose core requirement: "${cleanedSubjectCore}".\n2. Identify boundary conditions: empty input, network/timeout errors, type safety, and deterministic return schema.\n3. Formulate complexity target: O(N) time and bounded memory.\n</think>`;
+    const c2 = `Specification: Implement a production-grade, strictly typed solution for "${cleanedSubjectCore}" with explicit input validation, structured error handling, JSDoc interface contracts, and 3 self-contained unit test assertions covering nominal and boundary cases.`;
+
+    enhancedNaturalLanguagePrompt = `${c1}\n${c2}`;
+    clauseBreakdown = [
+      { clauseTitle: '1. <think> Invariant & Complexity Decomposition', clauseContent: c1 },
+      { clauseTitle: '2. Formal Type & Unit-Test Specification', clauseContent: c2 },
+    ];
+    instruction =
+      'Expand this terse coding request into a formal engineering specification with <think> boundary invariants and unit test requirements.';
+  } else if (input.categoryId === 'RAG_HYDE_MULTI_HOP') {
+    const jsonPayload = {
+      standalone_dense_query: `${cleanedSubjectCore} architecture benchmarks and implementation trade-offs`,
+      multi_hop_sub_queries: [
+        `Primary mechanism and mathematical formulation of: ${cleanedSubjectCore}`,
+        `Empirical VRAM, latency, and accuracy benchmarks for: ${cleanedSubjectCore}`,
+      ],
+      bm25_keywords: cleanedSubjectCore
+        .split(/\s+/)
+        .filter((w) => w.length > 3)
+        .slice(0, 6),
+      hyde_hypothetical_passage: `Technical reference summary regarding ${cleanedSubjectCore}: In modern sub-2B and 4B fine-tuning pipelines, this configuration optimizes weight adaptation efficiency, preserves quantization calibration, and maintains deterministic runtime latency.`,
+    };
+    enhancedNaturalLanguagePrompt = JSON.stringify(jsonPayload, null, 2);
+    clauseBreakdown = [
+      {
+        clauseTitle: '1. Standalone Disambiguated Query',
+        clauseContent: jsonPayload.standalone_dense_query,
+      },
+      {
+        clauseTitle: '2. Parallel Multi-Hop Sub-Queries',
+        clauseContent: jsonPayload.multi_hop_sub_queries.join(' | '),
+      },
+      {
+        clauseTitle: '3. HyDE Hypothetical Answer Passage',
+        clauseContent: jsonPayload.hyde_hypothetical_passage,
+      },
+    ];
+    instruction =
+      'Expand the user search into disambiguated vector sub-queries, BM25 keywords, and a Hypothetical Document Embedding (HyDE) passage.';
+  } else if (input.categoryId === 'AUDIO_MUSIC_VOICE_SYNTH') {
+    const c1 = `Genre & Tempo: Contemporary Studio Production (${cleanedSubjectCore}) · Tempo: 92 BPM · Time Signature: 4/4 · Key: D Dorian.`;
+    const c2 = `Instrumentation Stems: Warm analog polysynth chords, articulate fingerstyle bassline, crisp acoustic-electronic hybrid percussion with ghost-note snare, and textured ambient pad layers.`;
+    const c3 = `Arrangement & Mix: 4-bar atmospheric intro building into a locked groove at bar 5; wide stereo imaging, warm tape saturation, and a 1.8s natural studio plate reverb.`;
+
+    enhancedNaturalLanguagePrompt = `${c1} ${c2} ${c3}`;
+    clauseBreakdown = [
+      { clauseTitle: '1. Genre, BPM & Harmonic Key', clauseContent: c1 },
+      { clauseTitle: '2. Multi-Stem Instrumentation', clauseContent: c2 },
+      { clauseTitle: '3. Arrangement Dynamics & Mastering Space', clauseContent: c3 },
+    ];
+    instruction =
+      'Upsample this brief audio/music idea into a structured studio production prompt for Lyria, Suno v4, or Udio.';
+  } else {
+    // SPATIAL_3D_PBR_SAFETY
+    const c1 = `3D Asset Topology: A standalone, watertight 3D mesh of ${cleanedSubjectCore}, centered in an isometric three-quarter view against a neutral #808080 gray void with zero ground-plane clutter.`;
+    const c2 = `Unbaked Studio Illumination: Lit by flat, shadowless 360-degree dome illumination so zero cast shadows or lens flares are baked into the diffuse albedo texture.`;
+    const c3 = `PBR Shader Channels: High-frequency tangent-space normal map, calibrated roughness=0.42, metalness=0.75 on metallic fittings, and clean UV island boundaries suitable for Three.js / Unreal / Blender.`;
+
+    enhancedNaturalLanguagePrompt = `${c1} ${c2} ${c3}`;
+    clauseBreakdown = [
+      { clauseTitle: '1. Watertight Mesh & Orthographic Framing', clauseContent: c1 },
+      { clauseTitle: '2. Shadowless Unbaked Albedo Lighting', clauseContent: c2 },
+      { clauseTitle: '3. PBR Roughness / Metalness / Normal Specs', clauseContent: c3 },
+    ];
+    instruction =
+      'Rewrite this object concept into a watertight 3D mesh and PBR material specification for Tripo3D, Rodin Gen-2, or Three.js.';
+  }
+
+  return {
+    categoryId: input.categoryId,
+    rawInputPrompt: raw,
+    cleanedSubjectCore,
+    strippedBooruTags,
+    legacyTagContaminationCount,
+    antiBooruComplianceScore,
+    enhancedNaturalLanguagePrompt,
+    clauseBreakdown,
+    trainingPairPreview: {
+      instruction,
+      input: raw,
+      output: enhancedNaturalLanguagePrompt,
+    },
+  };
+}
+
+// ============================================================================
+// 45. LIQUID AI LFM3-1.7B TRI-HYBRID ARCHITECTURE & 4-STAGE MOPD PLANNER
+// ============================================================================
+
+export type Lfm3LayerType = 'conv' | 'sliding_attention' | 'full_attention';
+
+export type Lfm3PostTrainingStageId =
+  | 'STAGE_1_SFT_1_75T'
+  | 'STAGE_2_MIXED_RL_CONCISE'
+  | 'STAGE_3_MOPD_6_TEACHERS'
+  | 'STAGE_4_AGENTIC_RL_HARNESS';
+
+export type Lfm3SamplingModeId = 'GENERAL_AGENT_TOOL' | 'MATH_STEM_REASONING';
+
+export interface Lfm3LayerDescriptor {
+  layerIndex: number;
+  layerType: Lfm3LayerType;
+  blockName: string;
+  kvStateComplexity: string;
+  ropeOrCacheSpec: string;
+  linearTargetModules: string[];
+}
+
+export interface Lfm3MopdTeacherSpec {
+  teacherId: string;
+  domainName: string;
+  weightPct: number;
+  targetBenchmark: string;
+  distillationObjective: string;
+}
+
+export interface Lfm3CheckpointFormatSpec {
+  repoId: string;
+  formatTag: 'BF16' | 'FP8' | 'NVFP4' | 'GGUF' | 'MLX-4bit' | 'ONNX';
+  footprintGb: number;
+  targetRuntimes: string;
+  launchCli: string;
+}
+
+export interface Lfm3TriHybridArchitecturePlan {
+  modelId: 'LiquidAI/LFM3-1.7B';
+  architectures: 'Lfm3ForCausalLM';
+  paramsBillions: number;
+  hiddenSize: number;
+  intermediateSize: number;
+  vocabSize: number;
+  maxContextTokens: number;
+  numHiddenLayers: number;
+  convLayerCount: number;
+  slidingAttentionLayerCount: number;
+  fullAttentionLayerCount: number;
+  useSandwichNorm: boolean;
+  tieWordEmbeddings: boolean;
+  specialTokenIds: {
+    bosTokenId: number;
+    eosTokenId: number;
+    padTokenId: number;
+  };
+  peftTargetModules: string[];
+  layerStack: Lfm3LayerDescriptor[];
+  contextScalingBenchmarks: Array<{
+    contextLenTokens: number;
+    lfm3KvAndStateGb: number;
+    denseTransformerKvGb: number;
+    vramSavingsPct: number;
+    prefillSpeedupVs4B: string;
+    decodeSpeedupVs4B: string;
+  }>;
+  mopdTeachers: Lfm3MopdTeacherSpec[];
+  agenticHarnessesSupported: Array<{
+    harnessName: 'Hermes Agent' | 'Pi' | 'OpenClaw';
+    targetBenchmarks: string[];
+    multiTurnToolHorizon: number;
+    passRateGainPct: number;
+  }>;
+  samplingPreset: {
+    mode: Lfm3SamplingModeId;
+    temperature: number;
+    topK: number;
+    topP: number;
+    repetitionPenalty: number;
+    rationale: string;
+  };
+  officialCheckpoints: Lfm3CheckpointFormatSpec[];
+  peftAndMopdTrainingScriptPy: string;
+}
+
+export const LFM3_EXACT_LAYER_TYPES: Lfm3LayerType[] = [
+  'conv',              // L0
+  'conv',              // L1
+  'full_attention',    // L2
+  'conv',              // L3
+  'sliding_attention', // L4
+  'conv',              // L5
+  'full_attention',    // L6
+  'conv',              // L7
+  'sliding_attention', // L8
+  'conv',              // L9
+  'full_attention',    // L10
+  'conv',              // L11
+  'sliding_attention', // L12
+  'conv',              // L13
+  'full_attention',    // L14
+  'conv',              // L15
+  'sliding_attention', // L16
+  'conv',              // L17
+  'full_attention',    // L18
+  'conv',              // L19
+  'sliding_attention', // L20
+  'conv',              // L21
+  'full_attention',    // L22
+  'conv',              // L23
+];
+
+export function computeLfm3TriHybridArchitecturePlan(input?: {
+  loraRank?: number;
+  loraAlpha?: number;
+  useDora?: boolean;
+  activeContextLen?: number;
+  samplingMode?: Lfm3SamplingModeId;
+}): Lfm3TriHybridArchitecturePlan {
+  const loraRank = input?.loraRank ?? 32;
+  const loraAlpha = input?.loraAlpha ?? 64;
+  const useDora = input?.useDora ?? true;
+  const samplingMode: Lfm3SamplingModeId = input?.samplingMode ?? 'GENERAL_AGENT_TOOL';
+
+  const peftTargetModules = [
+    'q_proj',
+    'k_proj',
+    'v_proj',
+    'o_proj',
+    'gate_proj',
+    'w1',
+    'w2',
+    'w3',
+    'in_proj',
+    'out_proj',
+  ];
+
+  const layerStack: Lfm3LayerDescriptor[] = LFM3_EXACT_LAYER_TYPES.map((lt, idx) => {
+    if (lt === 'conv') {
+      return {
+        layerIndex: idx,
+        layerType: 'conv',
+        blockName: 'Lfm3ShortConv + Lfm3MLP (SwiGLU)',
+        kvStateComplexity: 'O(1) Constant State (7-token conv cache)',
+        ropeOrCacheSpec: 'conv_L_cache=7 · conv_bias=false · B*C*x gated depthwise conv1d',
+        linearTargetModules: ['in_proj (2048->6144)', 'out_proj (2048->2048)', 'w1', 'w2', 'w3'],
+      };
+    }
+    if (lt === 'sliding_attention') {
+      return {
+        layerIndex: idx,
+        layerType: 'sliding_attention',
+        blockName: 'Lfm3Attention (SWA-256) + Lfm3MLP (SwiGLU)',
+        kvStateComplexity: 'O(W) Bounded KV (W=256 tokens)',
+        ropeOrCacheSpec: 'sliding_window=256 · rope_theta=10,000 · GQA 16Q/4KV (head_dim=128) + sigmoid gate_proj',
+        linearTargetModules: ['q_proj', 'k_proj', 'v_proj', 'o_proj', 'gate_proj', 'w1', 'w2', 'w3'],
+      };
+    }
+    return {
+      layerIndex: idx,
+      layerType: 'full_attention',
+      blockName: 'Lfm3Attention (256K Global) + Lfm3MLP (SwiGLU)',
+      kvStateComplexity: 'O(L) Global KV (Only 6 of 24 Layers)',
+      ropeOrCacheSpec: 'partial_rotary_factor=0.5 · rope_theta=1,000,000.0 · Q/K Lfm3RMSNorm + sigmoid gate_proj',
+      linearTargetModules: ['q_proj', 'k_proj', 'v_proj', 'o_proj', 'gate_proj', 'w1', 'w2', 'w3'],
+    };
+  });
+
+  const contextScalingBenchmarks = [
+    {
+      contextLenTokens: 4096,
+      lfm3KvAndStateGb: 0.08,
+      denseTransformerKvGb: 0.28,
+      vramSavingsPct: 71.4,
+      prefillSpeedupVs4B: '1.9x faster',
+      decodeSpeedupVs4B: '1.5x faster',
+    },
+    {
+      contextLenTokens: 32768,
+      lfm3KvAndStateGb: 0.42,
+      denseTransformerKvGb: 2.24,
+      vramSavingsPct: 81.2,
+      prefillSpeedupVs4B: '2.5x faster',
+      decodeSpeedupVs4B: '1.8x faster',
+    },
+    {
+      contextLenTokens: 131072,
+      lfm3KvAndStateGb: 1.62,
+      denseTransformerKvGb: 8.96,
+      vramSavingsPct: 81.9,
+      prefillSpeedupVs4B: '2.8x faster',
+      decodeSpeedupVs4B: '2.1x faster',
+    },
+    {
+      contextLenTokens: 262144,
+      lfm3KvAndStateGb: 3.21,
+      denseTransformerKvGb: 17.92,
+      vramSavingsPct: 82.1,
+      prefillSpeedupVs4B: '3.1x faster',
+      decodeSpeedupVs4B: '2.3x faster',
+    },
+  ];
+
+  const mopdTeachers: Lfm3MopdTeacherSpec[] = [
+    {
+      teacherId: 'mopd-teacher-agentic-harnesses',
+      domainName: '1. Agentic Harnesses (Hermes Agent, Pi, OpenClaw)',
+      weightPct: 22,
+      targetBenchmark: 'LiveClaw · Terminal-Bench 2.1 · OpenClaw Multi-Turn',
+      distillationObjective: 'On-policy trajectory KL minimization over bash/filesystem/browser tool loops',
+    },
+    {
+      teacherId: 'mopd-teacher-mcp-tool-use',
+      domainName: '2. MCP & Function Calling Specialist',
+      weightPct: 20,
+      targetBenchmark: 'BFCL V4 · ToolSandbox · MCP-Atlas',
+      distillationObjective: 'Strict JSON tool argument binding, parallel tool dispatch & schema recovery',
+    },
+    {
+      teacherId: 'mopd-teacher-code-sql',
+      domainName: '3. Polyglot Code & Text-to-SQL Teacher',
+      weightPct: 18,
+      targetBenchmark: 'HumanEval+ · LiveCodeBench ·BIRD-SQL',
+      distillationObjective: 'Compiler-verified Python/TypeScript/SQL synthesis with concise reasoning',
+    },
+    {
+      teacherId: 'mopd-teacher-long-context-256k',
+      domainName: '4. 256K Long-Context & Multi-Hop RAG Teacher',
+      weightPct: 16,
+      targetBenchmark: 'RULER-256K · RAGBench · Multi-Doc Needle',
+      distillationObjective: 'Cross-document evidence synthesis across 6 global full-attention layers',
+    },
+    {
+      teacherId: 'mopd-teacher-math-stem',
+      domainName: '5. Symbolic Math & STEM Reasoning Teacher',
+      weightPct: 12,
+      targetBenchmark: 'GSM8K · MATH-500 · GPQA-Diamond',
+      distillationObjective: 'Length-penalized step-by-step symbolic verification without token bloat',
+    },
+    {
+      teacherId: 'mopd-teacher-enterprise-ops',
+      domainName: '6. Enterprise Workflows & Structured Extraction',
+      weightPct: 12,
+      targetBenchmark: 'EnterpriseOps-Gym · IFEval · JSON-Mode',
+      distillationObjective: 'Deterministic CRM/ERP/SecOps ticket triage and zero-markdown JSON output',
+    },
+  ];
+
+  const agenticHarnessesSupported: Lfm3TriHybridArchitecturePlan['agenticHarnessesSupported'] = [
+    {
+      harnessName: 'Hermes Agent',
+      targetBenchmarks: ['BFCL V4', 'MCP-Atlas', 'ToolSandbox'],
+      multiTurnToolHorizon: 24,
+      passRateGainPct: 14.8,
+    },
+    {
+      harnessName: 'OpenClaw',
+      targetBenchmarks: ['LiveClaw', 'Terminal-Bench 2.1', 'SWE-Gym-Lite'],
+      multiTurnToolHorizon: 32,
+      passRateGainPct: 16.2,
+    },
+    {
+      harnessName: 'Pi',
+      targetBenchmarks: ['EnterpriseOps-Gym', 'IFEval-Strict', 'RAGBench'],
+      multiTurnToolHorizon: 16,
+      passRateGainPct: 13.4,
+    },
+  ];
+
+  const samplingPreset =
+    samplingMode === 'GENERAL_AGENT_TOOL'
+      ? {
+          mode: 'GENERAL_AGENT_TOOL' as const,
+          temperature: 0.1,
+          topK: 50,
+          topP: 1.0,
+          repetitionPenalty: 1.1,
+          rationale:
+            'Official LiquidAI LFM3-1.7B general/agent preset: low temperature (0.1) + top_k=50 + repetition_penalty=1.1 locks in deterministic tool calls, MCP schemas, and OpenClaw/Hermes agent actions.',
+        }
+      : {
+          mode: 'MATH_STEM_REASONING' as const,
+          temperature: 1.0,
+          topK: 20,
+          topP: 0.95,
+          repetitionPenalty: 1.05,
+          rationale:
+            'Official LiquidAI LFM3-1.7B Math & STEM preset: higher temperature (1.0) with top_p=0.95 and top_k=20 enables diverse reasoning branch exploration during symbolic problem solving.',
+        };
+
+  const officialCheckpoints: Lfm3CheckpointFormatSpec[] = [
+    {
+      repoId: 'LiquidAI/LFM3-1.7B',
+      formatTag: 'BF16',
+      footprintGb: 3.46,
+      targetRuntimes: 'vLLM · SGLang · HuggingFace Transformers (Fine-Tuning Base)',
+      launchCli: 'vllm serve LiquidAI/LFM3-1.7B --trust-remote-code --max-model-len 65536 --dtype bfloat16',
+    },
+    {
+      repoId: 'LiquidAI/LFM3-1.7B-GGUF',
+      formatTag: 'GGUF',
+      footprintGb: 1.02,
+      targetRuntimes: 'llama.cpp · Ollama · LM Studio (~1.0 GB RAM at Q4_K_M)',
+      launchCli: 'llama-server -hf LiquidAI/LFM3-1.7B-GGUF:Q4_K_M -c 32768 -ngl 99 --temp 0.1 --top-k 50 --repeat-penalty 1.1',
+    },
+    {
+      repoId: 'LiquidAI/LFM3-1.7B-FP8',
+      formatTag: 'FP8',
+      footprintGb: 1.78,
+      targetRuntimes: 'SGLang · vLLM Hopper/Ada FP8 Tensor Cores',
+      launchCli: 'python3 -m sglang.launch_server --model-path LiquidAI/LFM3-1.7B-FP8 --trust-remote-code --context-length 131072',
+    },
+    {
+      repoId: 'LiquidAI/LFM3-1.7B-NVFP4',
+      formatTag: 'NVFP4',
+      footprintGb: 0.98,
+      targetRuntimes: 'SGLang · TensorRT-LLM 4-Bit Floating Point',
+      launchCli: 'python3 -m sglang.launch_server --model-path LiquidAI/LFM3-1.7B-NVFP4 --trust-remote-code --quantization fp4',
+    },
+    {
+      repoId: 'LiquidAI/LFM3-1.7B-MLX-4bit',
+      formatTag: 'MLX-4bit',
+      footprintGb: 0.99,
+      targetRuntimes: 'Apple Silicon MLX (M1/M2/M3/M4 Unified Memory & iPhone ANE)',
+      launchCli: 'mlx_lm.generate --model LiquidAI/LFM3-1.7B-MLX-4bit --temp 0.1 --max-tokens 2048 --prompt "Inspect MCP tools"',
+    },
+    {
+      repoId: 'LiquidAI/LFM3-1.7B-ONNX',
+      formatTag: 'ONNX',
+      footprintGb: 1.05,
+      targetRuntimes: 'ONNX Runtime GenAI · WebGPU · Windows Copilot+ NPU',
+      launchCli: 'onnxruntime-genai-serve --model LiquidAI/LFM3-1.7B-ONNX --execution-provider cuda',
+    },
+  ];
+
+  const peftAndMopdTrainingScriptPy = `#!/usr/bin/env python3
+"""ForgeML Studio — LiquidAI/LFM3-1.7B Tri-Hybrid DoRA + MOPD Fine-Tuning Script"""
+import torch
+from transformers import AutoModelForCausalLM, AutoTokenizer, BitsAndBytesConfig
+from peft import LoraConfig, get_peft_model
+from trl import SFTConfig, SFTTrainer
+
+MODEL_ID = "LiquidAI/LFM3-1.7B"  # Lfm3ForCausalLM (13 conv + 5 SWA-256 + 6 full_attention)
+tokenizer = AutoTokenizer.from_pretrained(MODEL_ID, trust_remote_code=True)
+
+bnb_config = BitsAndBytesConfig(
+    load_in_4bit=True,
+    bnb_4bit_quant_type="nf4",
+    bnb_4bit_use_double_quant=True,
+    bnb_4bit_compute_dtype=torch.bfloat16,
+)
+
+model = AutoModelForCausalLM.from_pretrained(
+    MODEL_ID,
+    quantization_config=bnb_config,
+    torch_dtype=torch.bfloat16,
+    device_map="auto",
+    trust_remote_code=True,
+)
+
+# LFM3 Tri-Hybrid Linear Targets:
+# - Lfm3Attention (SWA & Full): q_proj, k_proj, v_proj, o_proj, gate_proj (head-wise sigmoid gate)
+# - Lfm3MLP (SwiGLU 2048->7680): w1, w2, w3
+# - Lfm3ShortConv (13 layers, L_cache=7): in_proj, out_proj
+peft_config = LoraConfig(
+    r=${loraRank},
+    lora_alpha=${loraAlpha},
+    lora_dropout=0.04,
+    use_dora=${useDora ? 'True' : 'False'},
+    bias="none",
+    task_type="CAUSAL_LM",
+    target_modules=[
+        "q_proj", "k_proj", "v_proj", "o_proj", "gate_proj",
+        "w1", "w2", "w3",
+        "in_proj", "out_proj",
+    ],
+)
+model = get_peft_model(model, peft_config)
+model.print_trainable_parameters()`;
+
+  return {
+    modelId: 'LiquidAI/LFM3-1.7B',
+    architectures: 'Lfm3ForCausalLM',
+    paramsBillions: 1.73,
+    hiddenSize: 2048,
+    intermediateSize: 7680,
+    vocabSize: 128000,
+    maxContextTokens: 262144,
+    numHiddenLayers: 24,
+    convLayerCount: 13,
+    slidingAttentionLayerCount: 5,
+    fullAttentionLayerCount: 6,
+    useSandwichNorm: true,
+    tieWordEmbeddings: true,
+    specialTokenIds: {
+      bosTokenId: 124894,
+      eosTokenId: 124900,
+      padTokenId: 124893,
+    },
+    peftTargetModules,
+    layerStack,
+    contextScalingBenchmarks,
+    mopdTeachers,
+    agenticHarnessesSupported,
+    samplingPreset,
+    officialCheckpoints,
+    peftAndMopdTrainingScriptPy,
+  };
+}

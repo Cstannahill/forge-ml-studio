@@ -40,6 +40,7 @@ import {
 import { InfoTooltip } from './InfoTooltip';
 import { HuggingFaceLivePreviewPanel } from './HuggingFaceLivePreviewPanel';
 import { CurriculumAndVlmAugmentationPanel } from './CurriculumAndVlmAugmentationPanel';
+import { PromptEnhancementStudioPanel } from './PromptEnhancementStudioPanel';
 
 export interface HfDatasetCatalogItem {
   id: string;
@@ -67,18 +68,21 @@ interface DatasetStudioViewProps {
 }
 
 const MODEL_TIER_FILTERS: Array<{ id: 'ALL' | ModelSizeTier; label: string }> = [
-  { id: 'ALL', label: 'All Target Models (24 Blends)' },
+  { id: 'ALL', label: 'All Target Models (34 Blends)' },
+  { id: 'LFM3-1.7B', label: 'LFM3 (1.7B Tri-Hybrid)' },
   { id: 'LFM2.5-300M', label: 'LFM2.5 (300M)' },
   { id: 'LFM2.5-1.2B', label: 'LFM2.5 (1.2B)' },
   { id: 'LFM2.5-2.6B', label: 'LFM2.5 (2.6B)' },
   { id: 'Qwen3.5-0.8B', label: 'Qwen3.5 (0.8B)' },
   { id: 'Qwen3.5-2B', label: 'Qwen3.5 (2B)' },
+  { id: 'Qwen3.5-9B', label: 'Qwen3.5 (9B)' },
   { id: 'Gemma4-E2B', label: 'Gemma4 (E2B)' },
   { id: 'Gemma4-E4B', label: 'Gemma4 (E4B)' },
 ];
 
 const TASK_CATEGORY_FILTERS: Array<'ALL' | BlendTaskCategory> = [
   'ALL',
+  'Prompt Enhancement & Upsampling',
   'Tool Calling & Function Execution',
   'Code Generation & Debugging',
   'Edge RAG & Grounded QA',
@@ -228,7 +232,9 @@ export const DatasetStudioView: React.FC<DatasetStudioViewProps> = ({
   const tokenizerReport = inspectTokenizerAndChatTemplate({
     architecture: tokenizerArch,
     modelName:
-      tokenizerArch === 'LFM2.5'
+      tokenizerArch === 'LFM3'
+        ? 'LiquidAI/LFM3-1.7B'
+        : tokenizerArch === 'LFM2.5'
         ? 'LFM2.5-1.2B-Instruct'
         : tokenizerArch === 'Gemma4'
         ? 'Gemma4-E2B-Instruct'
@@ -385,17 +391,25 @@ export const DatasetStudioView: React.FC<DatasetStudioViewProps> = ({
         </div>
       </section>
 
-      {/* Section 01: 24 Curated Task-Focused HuggingFace Dataset Blends for Sub-2B Models */}
+      {/* Multi-Model Prompt Enhancement & Natural-Language Upsampling Suite (All 14 Models) */}
+      <PromptEnhancementStudioPanel
+        targetFormat={targetFormat}
+        onApplyCuratedBlend={onApplyCuratedBlend}
+        onAppendSamples={onAppendSamples}
+      />
+
+      {/* Section 01: 32 Curated Task-Focused HuggingFace Dataset Blends */}
       <section className="bg-[#111827] border border-slate-800/90 rounded-lg p-5 space-y-5">
         <div className="flex flex-col lg:flex-row lg:items-center justify-between gap-4 pb-4 border-b border-slate-800/80">
           <div>
             <h2 className="text-base font-semibold text-slate-100">
-              01. Curated Task-Specific HuggingFace Dataset Blends (24 Architectures &amp; Recipes)
+              01. Curated Task-Specific HuggingFace Dataset Blends (34 Architectures &amp; Recipes)
             </h2>
             <p className="text-xs text-slate-400 mt-0.5">
               Purpose-built multi-dataset blends engineered for{' '}
+              <span className="text-cyan-300 font-mono">LFM3 (1.7B Tri-Hybrid 256K)</span>,{' '}
               <span className="text-slate-200 font-mono">LFM2.5 (300M, 1.2B, 2.6B)</span>,{' '}
-              <span className="text-slate-200 font-mono">Qwen3.5 (0.8B, 2B)</span>, and{' '}
+              <span className="text-slate-200 font-mono">Qwen3.5 (0.8B, 2B, 9B)</span>, and{' '}
               <span className="text-slate-200 font-mono">Gemma4 (E2B, E4B)</span>
             </p>
           </div>
@@ -1448,7 +1462,7 @@ export const DatasetStudioView: React.FC<DatasetStudioViewProps> = ({
               </div>
 
               <div className="flex items-center gap-1 bg-[#0B0F17] p-1 rounded-lg border border-slate-800">
-                {(['Qwen3.5', 'LFM2.5', 'Gemma4'] as ArchitectureFamily[]).map((arch) => (
+                {(['Qwen3.5', 'LFM3', 'LFM2.5', 'Gemma4'] as ArchitectureFamily[]).map((arch) => (
                   <button
                     key={arch}
                     type="button"

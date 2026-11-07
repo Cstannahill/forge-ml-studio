@@ -69,6 +69,12 @@ import {
   runDatasetDecisionModelGatekeeper,
   computeGrpoHybridDecisionRewardPlan,
   simulateDecisionCascadeRouter,
+  ALL_REGISTERED_PROMPT_ENHANCEMENT_MODELS,
+  PROMPT_ENHANCEMENT_TAXONOMY,
+  computeModelPromptEnhancementConfig,
+  runNaturalLanguagePromptUpsampler,
+  computeLfm3TriHybridArchitecturePlan,
+  LFM3_EXACT_LAYER_TYPES,
 } from './pipelineLogic.ts';
 import { CURATED_DATASET_BLENDS } from '../data/curatedDatasetBlends.ts';
 import { ML_GLOSSARY } from './glossaryData.ts';
@@ -311,12 +317,20 @@ test('buildSafetensorsExportPlan and createSafetensorsBinaryArtifact produce spe
   assert.equal(binary.byteLength, 8 + headerLen + 64);
 });
 
-test('CURATED_DATASET_BLENDS contains 24 task-specific blends covering LFM2.5 (300M, 1.2B, 2.6B), Qwen3.5 (0.8B, 2B), and Gemma4 (E2B, E4B)', () => {
-  assert.equal(CURATED_DATASET_BLENDS.length, 24);
+test('CURATED_DATASET_BLENDS contains 34 task-specific blends (including 8 Prompt Enhancement & Upsampling blends and 2 LFM3-1.7B Tri-Hybrid Agentic/MOPD blends) covering LFM3 (1.7B), LFM2.5 (300M, 1.2B, 2.6B), Qwen3.5 (0.8B, 2B, 9B), and Gemma4 (E2B, E4B)', () => {
+  assert.equal(CURATED_DATASET_BLENDS.length, 34);
+  const promptBlends = CURATED_DATASET_BLENDS.filter(
+    (b) => b.taskCategory === 'Prompt Enhancement & Upsampling'
+  );
+  assert.equal(promptBlends.length, 8);
   for (const blend of CURATED_DATASET_BLENDS) {
     const totalWeight = blend.datasets.reduce((acc, d) => acc + d.weightPct, 0);
     assert.equal(totalWeight, 100, `Blend ${blend.id} weights must sum to 100%`);
     assert.ok(blend.datasets.length >= 2);
+    assert.ok(
+      blend.primaryTargetModels.includes('LFM3-1.7B'),
+      `Blend ${blend.id} must support LFM3-1.7B`
+    );
   }
 });
 
@@ -1038,7 +1052,7 @@ import {
   computeSyntheticVlmAugmentationPreview,
 } from './visionPipelineLogic.ts';
 
-test('INITIAL_VISION_MODELS and CURATED_VISION_BLENDS include 6 multimodal models (including Gemma4 E2B & E4B) and 28 HuggingFace dataset blends including VEIL Privacy Hazard Auditing and Gemma4-VL suites', () => {
+test('INITIAL_VISION_MODELS and CURATED_VISION_BLENDS include 6 multimodal models (including Gemma4 E2B & E4B) and 30 HuggingFace dataset blends including VEIL Privacy Hazard Auditing, Gemma4-VL, and Multimodal Prompt Upsampling suites', () => {
   const modelIds = INITIAL_VISION_MODELS.map((m) => m.id);
   assert.equal(INITIAL_VISION_MODELS.length, 6);
   assert.ok(modelIds.includes('LiquidAI/LFM2.5-VL-450M-Instruct'));
@@ -1047,7 +1061,7 @@ test('INITIAL_VISION_MODELS and CURATED_VISION_BLENDS include 6 multimodal model
   assert.ok(modelIds.includes('Qwen/Qwen3.5-VL-2B-Instruct'));
   assert.ok(modelIds.includes('google/gemma-4-e2b-vision-it'));
   assert.ok(modelIds.includes('google/gemma-4-e4b-vision-it'));
-  assert.equal(CURATED_VISION_BLENDS.length, 28);
+  assert.equal(CURATED_VISION_BLENDS.length, 30);
 
   const veilBlends = CURATED_VISION_BLENDS.filter(
     (b) => b.taskCategory === 'VEIL_PRIVACY_AUDIT'
@@ -1434,8 +1448,8 @@ test('buildVisionVlmBenchmarkDashboard and Gemma4-VL Pan-&-Scan serialization tr
   assert.equal(gemma4Audit.tokens[1].tokenLiteral, '<image_soft_token>');
 });
 
-test('END_TO_END_RECIPE_PRESETS and computeRecipePresetDiffPreview provide 6 goal-driven autopilot profiles with accurate diff previews', () => {
-  assert.equal(END_TO_END_RECIPE_PRESETS.length, 6);
+test('END_TO_END_RECIPE_PRESETS and computeRecipePresetDiffPreview provide 8 goal-driven autopilot profiles (including 2 LFM3-1.7B recipes) with accurate diff previews', () => {
+  assert.equal(END_TO_END_RECIPE_PRESETS.length, 8);
   const gemma4Recipe = END_TO_END_RECIPE_PRESETS.find(
     (r) => r.id === 'recipe-gemma4-e4b-doc-table-ocr'
   );
@@ -1443,6 +1457,12 @@ test('END_TO_END_RECIPE_PRESETS and computeRecipePresetDiffPreview provide 6 goa
   assert.equal(gemma4Recipe?.pipelineTrack, 'VISION_VLM');
   assert.equal(gemma4Recipe?.targetModelId, 'google/gemma-4-e4b-vision-it');
   assert.equal(gemma4Recipe?.visionTargetFormat, 'GEMMA4_VL_PAN_SCAN');
+
+  const lfm3Recipe = END_TO_END_RECIPE_PRESETS.find(
+    (r) => r.id === 'recipe-lfm3-17b-agentic-mcp-openclaw'
+  );
+  assert.ok(lfm3Recipe);
+  assert.equal(lfm3Recipe?.targetModelId, 'LiquidAI/LFM3-1.7B');
 
   const diffPreview = computeRecipePresetDiffPreview(
     {
@@ -1475,7 +1495,7 @@ test('END_TO_END_RECIPE_PRESETS and computeRecipePresetDiffPreview provide 6 goa
 });
 
 test('exportForgeMlWorkspaceJson and parseAndValidateForgeMlWorkspaceJson round-trip .forgeml.json workspace snapshots cleanly', () => {
-  assert.equal(DEFAULT_WORKSPACE_PROJECTS.length, 3);
+  assert.equal(DEFAULT_WORKSPACE_PROJECTS.length, 4);
   const exportedJson = exportForgeMlWorkspaceJson(
     DEFAULT_WORKSPACE_PROJECTS[1],
     DEFAULT_WORKSPACE_PROJECTS
@@ -1487,7 +1507,7 @@ test('exportForgeMlWorkspaceJson and parseAndValidateForgeMlWorkspaceJson round-
     parsed.snapshot?.activeProject.projectId,
     DEFAULT_WORKSPACE_PROJECTS[1].projectId
   );
-  assert.equal(parsed.snapshot?.projects.length, 3);
+  assert.equal(parsed.snapshot?.projects.length, 4);
 
   const invalid = parseAndValidateForgeMlWorkspaceJson('{"schemaVersion": "wrong"}');
   assert.equal(invalid.valid, false);
@@ -1630,7 +1650,7 @@ test('computeLayerWiseMixedPrecisionPlan and computeSpeculativeDecodingPairingPl
   assert.ok(mixedPlan.perplexityRecoveredPct >= 65);
   assert.ok(mixedPlan.llamaQuantizeHeterogeneousCli.includes('--tensor-type'));
 
-  assert.equal(SPECULATIVE_MODEL_PAIRINGS.length, 6);
+  assert.equal(SPECULATIVE_MODEL_PAIRINGS.length, 7);
   const specPlan = computeSpeculativeDecodingPairingPlan({
     pairingId: 'spec-gemma4-vl',
     lookaheadDraftTokensGamma: 6,
@@ -1835,6 +1855,93 @@ test('4-Part Decision Model Suite: evaluateWithDecisionModelCascade, runDatasetD
   assert.equal(totalShare, 100.0);
   assert.ok(routerSim.localOffloadRatePct > 70);
   assert.ok(routerSim.routerPythonSnippet.includes('LOCAL_GBNF_RETRY'));
+});
+
+test('Section 44 Multi-Model Prompt Enhancement & Natural-Language Upsampling Suite covers all 15 models (including LiquidAI/LFM3-1.7B), 8 taxonomy categories, and strips legacy Booru tags for Flux 2/3 & Qwen-Image 2/3', () => {
+  assert.equal(ALL_REGISTERED_PROMPT_ENHANCEMENT_MODELS.length, 15);
+  const textModels = ALL_REGISTERED_PROMPT_ENHANCEMENT_MODELS.filter(
+    (m) => m.modalityTrack === 'TEXT_LLM'
+  );
+  const vlmModels = ALL_REGISTERED_PROMPT_ENHANCEMENT_MODELS.filter(
+    (m) => m.modalityTrack === 'VISION_VLM'
+  );
+  assert.equal(textModels.length, 9);
+  assert.equal(vlmModels.length, 6);
+  assert.ok(textModels.some((m) => m.modelId === 'LiquidAI/LFM3-1.7B'));
+
+  assert.equal(PROMPT_ENHANCEMENT_TAXONOMY.length, 8);
+  for (const cat of PROMPT_ENHANCEMENT_TAXONOMY) {
+    const sumW = cat.datasets.reduce((acc, d) => acc + d.weightPct, 0);
+    assert.equal(sumW, 100, `Category ${cat.id} dataset weights must sum to 100%`);
+  }
+
+  // Verify every single registered model produces a calibrated HPO plan across categories
+  for (const model of ALL_REGISTERED_PROMPT_ENHANCEMENT_MODELS) {
+    const plan = computeModelPromptEnhancementConfig(
+      model.modelId,
+      'IMAGE_GEN_NATURAL_PROSE'
+    );
+    assert.equal(plan.modelId, model.modelId);
+    assert.equal(plan.hpoConfig.loraAlpha, plan.hpoConfig.loraRank * 2);
+    assert.equal(plan.antiBooruPenaltyEnabled, true);
+    assert.ok(plan.estimatedVramGb > 0.5);
+  }
+
+  // Verify Anti-Booru Tag Linter strips Danbooru tags and preserves exact quoted typography
+  const upsampledImage = runNaturalLanguagePromptUpsampler({
+    rawPrompt:
+      '1girl, cyberpunk barista, neon sign "SYNTH BREW", masterpiece, best quality, absurdres, 8k, bokeh',
+    categoryId: 'IMAGE_GEN_NATURAL_PROSE',
+  });
+  assert.ok(upsampledImage.strippedBooruTags.includes('1girl'));
+  assert.ok(upsampledImage.strippedBooruTags.includes('masterpiece'));
+  assert.ok(upsampledImage.strippedBooruTags.includes('best quality'));
+  assert.ok(upsampledImage.strippedBooruTags.includes('8k'));
+  assert.ok(upsampledImage.enhancedNaturalLanguagePrompt.includes('"SYNTH BREW"'));
+  assert.ok(!upsampledImage.enhancedNaturalLanguagePrompt.includes('1girl'));
+  assert.equal(upsampledImage.clauseBreakdown.length, 5);
+
+  // Verify BPO General Text and RAG HyDE categories
+  const upsampledBpo = runNaturalLanguagePromptUpsampler({
+    rawPrompt: 'explain zero downtime postgres migration',
+    categoryId: 'GENERAL_TEXT_BPO_META',
+  });
+  assert.ok(upsampledBpo.enhancedNaturalLanguagePrompt.includes('Role & Persona'));
+
+  const upsampledRag = runNaturalLanguagePromptUpsampler({
+    rawPrompt: 'how does DoRA compare to LoRA at 4-bit?',
+    categoryId: 'RAG_HYDE_MULTI_HOP',
+  });
+  assert.ok(upsampledRag.enhancedNaturalLanguagePrompt.includes('hyde_hypothetical_passage'));
+});
+
+test('Section 45 LFM3-1.7B Tri-Hybrid Architecture (Lfm3ForCausalLM) models 24-layer stack (13 conv + 5 SWA-256 + 6 full_attention), 256K KV cache savings, 10 PEFT targets, and 6-Teacher MOPD', () => {
+  assert.equal(LFM3_EXACT_LAYER_TYPES.length, 24);
+  const plan = computeLfm3TriHybridArchitecturePlan({
+    loraRank: 32,
+    loraAlpha: 64,
+    useDora: true,
+    activeContextLen: 262144,
+    samplingMode: 'GENERAL_AGENT_TOOL',
+  });
+
+  assert.equal(plan.modelId, 'LiquidAI/LFM3-1.7B');
+  assert.equal(plan.architectures, 'Lfm3ForCausalLM');
+  assert.equal(plan.convLayerCount, 13);
+  assert.equal(plan.slidingAttentionLayerCount, 5);
+  assert.equal(plan.fullAttentionLayerCount, 6);
+  assert.equal(plan.layerStack.length, 24);
+  assert.equal(plan.peftTargetModules.length, 10);
+  assert.ok(plan.peftTargetModules.includes('w1'));
+  assert.ok(plan.peftTargetModules.includes('in_proj'));
+  assert.ok(plan.peftTargetModules.includes('gate_proj'));
+  const ctx256k = plan.contextScalingBenchmarks.find((b) => b.contextLenTokens === 262144)!;
+  assert.ok(ctx256k.vramSavingsPct >= 75);
+  assert.ok(ctx256k.lfm3KvAndStateGb < ctx256k.denseTransformerKvGb);
+  assert.equal(plan.mopdTeachers.length, 6);
+  const sumTeacherShare = plan.mopdTeachers.reduce((acc, t) => acc + t.weightPct, 0);
+  assert.equal(sumTeacherShare, 100);
+  assert.equal(plan.officialCheckpoints.length, 6);
 });
 
 

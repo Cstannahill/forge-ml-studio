@@ -1631,6 +1631,78 @@ export const CURATED_VISION_BLENDS: CuratedVisionBlend[] = [
       },
     ],
   },
+  {
+    id: 'vlm-blend-flux3-qwen-image-prose-upsampler',
+    title: 'Flux 2/3 & Qwen-Image 2/3 Reference-Image-to-Natural-Prose Prompt Upsampler',
+    recommendedModelIds: [
+      'Qwen/Qwen3.5-VL-2B-Instruct',
+      'google/gemma-4-e4b-vision-it',
+      'google/gemma-4-e2b-vision-it',
+      'LiquidAI/LFM2.5-VL-1.6B-Instruct',
+      'Qwen/Qwen3.5-VL-0.8B-Instruct',
+      'LiquidAI/LFM2.5-VL-450M-Instruct',
+    ],
+    taskCategory: 'SPATIAL_EDGE_VQA',
+    description:
+      'Trains VLMs to inspect a reference image (or rough sketch) plus a short user edit instruction and output a dense, grammatical English Flux 2/3 or Qwen-Image 2/3 generation/editing prompt covering spatial composition, lighting physics, lens optics, and quoted typography—strictly zero Booru tags.',
+    totalImagePairs: '64,000 image-to-prose upsampling pairs',
+    avgPatchTokens: 640,
+    expectedDocVqaLift: '+6.1% Text-in-Image Prompt Fidelity',
+    expectedMmmuLift: '+5.4% Spatial Composition Alignment',
+    datasets: [
+      {
+        hfRepoId: 'black-forest-labs/flux-3-image-klein-pup',
+        weightPct: 45,
+        focus: 'Reference image + short edit seed -> natural English Flux 2/3 prose upsampling',
+      },
+      {
+        hfRepoId: 'Lin-Chen/ShareGPT4V-Region-Captions',
+        weightPct: 35,
+        focus: 'Dense spatial hierarchy, lighting direction, surface materiality & lens descriptors',
+      },
+      {
+        hfRepoId: 'Qwen/Qwen-Image-Bench',
+        weightPct: 20,
+        focus: 'Exact quoted typography ("...") and multi-object attribute binding verification',
+      },
+    ],
+  },
+  {
+    id: 'vlm-blend-wan21-veo3-i2v-motion-director',
+    title: 'Image-to-Video (I2V) Camera Trajectory & Temporal Physics Director (Wan 2.1 / Veo 3)',
+    recommendedModelIds: [
+      'google/gemma-4-e4b-vision-it',
+      'Qwen/Qwen3.5-VL-2B-Instruct',
+      'LiquidAI/LFM2.5-VL-1.6B-Instruct',
+      'google/gemma-4-e2b-vision-it',
+      'Qwen/Qwen3.5-VL-0.8B-Instruct',
+      'LiquidAI/LFM2.5-VL-450M-Instruct',
+    ],
+    taskCategory: 'SPATIAL_EDGE_VQA',
+    description:
+      'Analyzes a conditioning keyframe image and synthesizes a 5-second temporal motion & cinematography prompt for Wan 2.1/2.2-I2V, HunyuanVideo, or Veo 3—anchoring subject trajectory, camera movement (dolly, crane, orbit, rack focus), and fluid/cloth physics to the starting frame geometry.',
+    totalImagePairs: '48,500 keyframe-to-temporal motion scripts',
+    avgPatchTokens: 672,
+    expectedDocVqaLift: '+4.8% Temporal Scene Consistency',
+    expectedMmmuLift: '+5.9% Camera Motion Adherence',
+    datasets: [
+      {
+        hfRepoId: 'ByteDance/VAP-Data',
+        weightPct: 50,
+        focus: 'Conditioning frame + semantic motion goal -> 5-second temporal beat progression',
+      },
+      {
+        hfRepoId: 'Rapidata/image-to-video-camera-movement-human-feedback-benchmark',
+        weightPct: 30,
+        focus: 'Human-preference-aligned camera trajectory directives anchored on keyframe depth',
+      },
+      {
+        hfRepoId: 'Rapidata/text-2-video-human-preferences-wan2.1',
+        weightPct: 20,
+        focus: 'Anti-morphing physical dynamics and natural shutter/lighting continuity',
+      },
+    ],
+  },
 ];
 
 /**

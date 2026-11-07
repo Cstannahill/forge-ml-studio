@@ -71,6 +71,7 @@ import { InfoTooltip } from './InfoTooltip';
 import { NextGenQualityAndWebGpuPanel } from './NextGenQualityAndWebGpuPanel';
 import { PythonEngineRunnerCard } from './PythonEngineRunnerCard';
 import { ConstraintSolverAndScriptDiffPanel } from './ConstraintSolverAndScriptDiffPanel';
+import { Lfm3TriHybridStudioPanel } from './Lfm3TriHybridStudioPanel';
 
 interface CommandCenterViewProps {
   models: RegisteredModel[];
@@ -825,7 +826,9 @@ export const CommandCenterView: React.FC<CommandCenterViewProps> = ({
             <span className="text-xs text-slate-400">tok/sec</span>
           </div>
           <div className="mt-2 text-xs text-blue-400 font-mono tabular-nums">
-            {selectedModel.architecture === 'LFM2.5'
+            {selectedModel.architecture === 'LFM3'
+              ? 'LFM3 Tri-Hybrid (13 ShortConv + 5 SWA + 6 Full)'
+              : selectedModel.architecture === 'LFM2.5'
               ? 'Liquid Hybrid SSM + Conv1D Fused'
               : selectedModel.architecture === 'Gemma4'
               ? 'FlashAttention-3 + Softcap Fused'
@@ -855,6 +858,14 @@ export const CommandCenterView: React.FC<CommandCenterViewProps> = ({
           </div>
         </div>
       </section>
+
+      {/* LiquidAI LFM3-1.7B Tri-Hybrid Architecture, PEFT Target Map & 6-Teacher MOPD Studio */}
+      <Lfm3TriHybridStudioPanel
+        selectedModelId={selectedModelId}
+        activeHpoConfig={activeHpoConfig}
+        onSelectModel={onSelectModel}
+        onApplyHpoConfig={onUpdateHpoConfig}
+      />
 
       {/* Visual Progress Bars: Current Epoch Completion, ETA, and Memory Utilization Trends */}
       <section

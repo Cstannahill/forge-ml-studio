@@ -684,6 +684,7 @@ export const ModelBenchmarksView: React.FC<ModelBenchmarksViewProps> = ({
               className="w-full bg-[#0B0F17] border border-slate-800 rounded-lg px-3 py-2 text-xs text-slate-100"
             >
               <option value="Qwen3.5">Qwen3.5 (GQA + Dynamic NTK)</option>
+              <option value="LFM3">LFM3 (Tri-Hybrid: 13 ShortConv + 5 SWA + 6 Full Attn)</option>
               <option value="LFM2.5">LFM2.5 (Liquid Hybrid SSM)</option>
               <option value="Gemma4">Gemma4 (Sliding-Window + Softcap)</option>
               <option value="Llama3.3">Llama 3.3</option>

@@ -1876,7 +1876,7 @@ export default function App() {
       <footer className="border-t border-[#4A453E] bg-[#22211F] py-4 px-6 text-xs text-[#A89984]">
         <div className="max-w-[1400px] mx-auto flex flex-col lg:flex-row items-center justify-between gap-3">
           <span>
-            ForgeML Pipeline Studio · Sub-2B Edge &amp; Multi-Model Fine-Tuning (LFM2.5, Qwen3.5, Gemma4)
+            ForgeML Pipeline Studio · Sub-2B Edge &amp; Multi-Model Fine-Tuning (LFM3, LFM2.5, Qwen3.5, Gemma4)
           </span>
 
           <div className="flex flex-wrap items-center gap-3 font-mono text-[11px]">
